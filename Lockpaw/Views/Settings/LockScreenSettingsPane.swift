@@ -18,9 +18,11 @@ struct LockScreenSettingsPane: View {
     @AppStorage(FadeToBlack.storageKey) private var fadeToBlackDelay = FadeToBlack.defaultValue
 
     @AppStorage(GazeController.enabledKey) private var gazeEnabled = GazeController.defaultEnabled
+    @AppStorage(MascotFolderController.sourceKey) private var customSource = MascotFolderController.imageSource
 
     @ObservedObject private var customMascot = CustomMascot.shared
     @ObservedObject private var gaze = GazeController.shared
+    @ObservedObject private var folder = MascotFolderController.shared
     @ObservedObject private var supporter = Supporter.shared
     @State private var customMascotError: String?
 
@@ -44,42 +46,62 @@ struct LockScreenSettingsPane: View {
                         .pickerStyle(.segmented)
                 }
 
-                if Mascot.resolved(from: selectedMascot) == .custom {
-                    LabeledContent {
-                        HStack(spacing: 8) {
-                            if customMascot.hasImage {
-                                Button("Remove") {
-                                    customMascot.remove()
-                                    customMascotError = nil
-                                }
-                            }
-                            Button(customMascot.hasImage ? "Replace\u{2026}" : "Choose\u{2026}") { chooseCustomImage() }
-                        }
-                    } label: {
-                        SettingLabel("Image", detail: customMascotError ?? "PNG, JPEG or HEIC. A transparent background looks best.")
-                    }
-
-                    if customMascot.hasImage {
-                        Toggle(isOn: gazeBinding) {
-                            SettingLabel("Eyes follow passers-by", detail: gazeDetail)
-                        }
-                        .disabled(customMascot.eyes == nil)
-                        .onAppear {
-                            customMascot.refreshEyesIfNeeded()
-                            gaze.refreshAccess()
-                        }
-                    }
-                }
-
+                // Always straight after the mascot choice, so it doesn't move when Custom
+                // adds its rows.
                 if Mascot.effective(from: selectedMascot) != .hidden {
                     Picker("Mascot size", selection: $mascotSize) { sizeOptions }
                         .pickerStyle(.segmented)
                 }
 
-                Picker(selection: $textSize) { sizeOptions } label: {
-                    SettingLabel("Text size", detail: "The message, the timer and the agents waiting.")
+                if Mascot.resolved(from: selectedMascot) == .custom {
+                    Picker("Source", selection: $customSource) {
+                        Text("Image").tag(MascotFolderController.imageSource)
+                        Text("Folder").tag(MascotFolderController.folderSource)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: customSource) { _, _ in folder.sourceChanged() }
+
+                    if usesFolder {
+                        LabeledContent {
+                            HStack(spacing: 8) {
+                                if folder.folderURL != nil {
+                                    Button("Rescan") { folder.rescan() }
+                                        .disabled(folder.progress != nil)
+                                }
+                                Button(folder.folderURL == nil ? "Choose\u{2026}" : "Change\u{2026}") { chooseFolder() }
+                            }
+                        } label: {
+                            SettingLabel(folder.folderURL?.lastPathComponent ?? "Folder", detail: MascotFolder.statusText(folder.state))
+                        }
+                    } else {
+                        LabeledContent {
+                            HStack(spacing: 8) {
+                                if customMascot.hasImage {
+                                    Button("Remove") {
+                                        customMascot.remove()
+                                        customMascotError = nil
+                                    }
+                                }
+                                Button(customMascot.hasImage ? "Replace\u{2026}" : "Choose\u{2026}") { chooseCustomImage() }
+                            }
+                        } label: {
+                            SettingLabel("Image", detail: customMascotError ?? "PNG, JPEG or HEIC. A transparent background looks best.")
+                        }
+                    }
+
+                    // Shown from the start in folder mode, not only once an image is ready:
+                    // it is a setting for the whole set, and waiting for the folder to be
+                    // prepared made it turn up half a minute late.
+                    if customMascot.hasImage || usesFolder {
+                        Toggle(isOn: gazeBinding) {
+                            SettingLabel("Eyes follow passers-by", detail: gazeDetail)
+                        }
+                        .onAppear {
+                            customMascot.refreshEyesInBackground()
+                            gaze.refreshAccess()
+                        }
+                    }
                 }
-                .pickerStyle(.segmented)
 
                 if supporter.isSupporter {
                     Toggle(isOn: $seasonalMascots) {
@@ -97,6 +119,12 @@ struct LockScreenSettingsPane: View {
                             if newValue.count > 120 { message = String(newValue.prefix(120)) }
                         }
                 }
+                // Outside the "Show a message" switch: it sizes the timer and the waiting
+                // agents too, which show either way.
+                Picker(selection: $textSize) { sizeOptions } label: {
+                    SettingLabel("Text size", detail: "The message, the timer and the agents waiting.")
+                }
+                .pickerStyle(.segmented)
             }
 
             Section("Background") {
@@ -155,11 +183,16 @@ struct LockScreenSettingsPane: View {
         ForEach(LockScreenSize.allCases) { Text($0.displayName).tag($0.rawValue) }
     }
 
-    /// On only with eyes to move and the camera granted. Turning it on is where the camera
-    /// permission is asked, here in Settings, never on the lock screen.
+    /// The user's choice, shown as on only with the camera granted. Turning it on is where
+    /// the camera permission is asked, here in Settings, never on the lock screen.
+    ///
+    /// Deliberately not tied to whether the current image (or folder) has eyes that can
+    /// move: it used to be, and switching from Image to Folder made the switch read off
+    /// although nothing had been turned off. Whether anything can move is what the line
+    /// under it says; the camera itself still only runs for an image with eyes.
     private var gazeBinding: Binding<Bool> {
         Binding(
-            get: { gazeEnabled && customMascot.eyes != nil && gaze.access == .authorized },
+            get: { gazeEnabled && gaze.access == .authorized },
             set: { isOn in
                 guard isOn else { gazeEnabled = false; return }
                 Task { gazeEnabled = await gaze.requestAccess() }
@@ -167,13 +200,39 @@ struct LockScreenSettingsPane: View {
         )
     }
 
+    private var usesFolder: Bool { customSource == MascotFolderController.folderSource }
+
+    /// With a folder, any image in it with eyes will do: the setting is for the whole set,
+    /// and an image without eyes simply stays still on the locks it is picked for.
+    private var hasMovableEyes: Bool {
+        usesFolder ? folder.usable.contains(where: \.hasEyes) : customMascot.eyes != nil
+    }
+
     private var gazeDetail: String {
-        if let rejection = customMascot.eyeRejection { return rejection.message }
-        if customMascot.eyes == nil { return "Looking for eyes\u{2026}" }
+        if usesFolder {
+            if folder.folderURL == nil { return "Choose a folder first." }
+            if !hasMovableEyes {
+                return folder.progress != nil ? "Looking for eyes\u{2026}" : "None of these images have eyes that can move."
+            }
+        } else {
+            if let rejection = customMascot.eyeRejection { return rejection.message }
+            if customMascot.eyes == nil { return "Looking for eyes\u{2026}" }
+        }
         if gaze.access == .denied {
             return "Camera access is off. Turn it on in System Settings \u{2192} Privacy & Security \u{2192} Camera."
         }
         return "Uses the camera while locked, so its light stays on. Frames stay on this Mac and are never saved."
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use Folder"
+        panel.message = "Choose a folder of images for the lock screen. Up to \(MascotFolder.maxImages) are used."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        folder.choose(url)
     }
 
     private func chooseCustomImage() {
