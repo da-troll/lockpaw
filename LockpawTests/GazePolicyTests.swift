@@ -339,4 +339,20 @@ final class GazeCameraPolicyTests: XCTestCase {
         XCTAssertTrue(decide(power: .init(onBattery: true, batteryPercent: 35), cutOff: true).run)
         XCTAssertTrue(decide(power: .init(onBattery: false, batteryPercent: 10), cutOff: true).run, "plugged in clears it")
     }
+
+    // MARK: - The Settings switch
+
+    func testTheSwitchShowsTheChoiceOnceTheCameraIsGranted() {
+        XCTAssertTrue(GazeCameraPolicy.settingShowsOn(enabled: true, access: .authorized))
+        XCTAssertFalse(GazeCameraPolicy.settingShowsOn(enabled: false, access: .authorized))
+        XCTAssertFalse(GazeCameraPolicy.settingShowsOn(enabled: true, access: .denied))
+        XCTAssertFalse(GazeCameraPolicy.settingShowsOn(enabled: true, access: .notDetermined))
+    }
+
+    /// Switching from Image to Folder lands on images still being prepared, with no eyes
+    /// yet. The switch must keep reading on; only the camera waits.
+    func testTheSwitchStaysOnForAnImageWithoutEyesWhileTheCameraStaysOff() {
+        XCTAssertTrue(GazeCameraPolicy.settingShowsOn(enabled: true, access: .authorized))
+        XCTAssertFalse(decide(hasEyes: false).run)
+    }
 }

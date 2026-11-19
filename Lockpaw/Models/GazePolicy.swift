@@ -148,6 +148,15 @@ enum GazeCameraPolicy {
         var cutOffForBattery: Bool
     }
 
+    /// Whether the Settings switch reads as on: the user's choice, with the camera granted.
+    ///
+    /// Takes nothing about the image on purpose. It once followed whether the current
+    /// image had eyes, and switching from Image to Folder made the switch read off although
+    /// nobody had turned it off. `decide` is where the eyes matter.
+    static func settingShowsOn(enabled: Bool, access: Access) -> Bool {
+        enabled && access == .authorized
+    }
+
     static func decide(
         enabled: Bool,
         hasEyes: Bool,
