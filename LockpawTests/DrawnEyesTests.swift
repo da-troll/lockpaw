@@ -57,6 +57,57 @@ final class DrawnEyesTests: XCTestCase {
         return canvas
     }
 
+    // MARK: - Pupils in eyeballs
+
+    /// Big white eyeballs with small dark pupils: the shape of most 3D-rendered mascots.
+    private func googly(pupilRadius: Double = 5, eyeRadius: Double = 20) -> Canvas {
+        var canvas = Canvas()
+        canvas.pixels.luminance = [Float](repeating: 0.4, count: 256 * 256)
+        canvas.disc(88, 110, radius: eyeRadius, 0.95)
+        canvas.disc(168, 110, radius: eyeRadius, 0.95)
+        canvas.disc(88, 110, radius: pupilRadius, 0.05)
+        canvas.disc(168, 110, radius: pupilRadius, 0.05)
+        return canvas
+    }
+
+    func testFindsSmallPupilsInBigEyeballs() throws {
+        // 80 px apart and 10 px wide: eight pupil-widths, past the plain spacing limit.
+        // Judged by the eyeballs they sit in (two eyeball-widths apart), they are eyes.
+        let eyes = try find(googly()).get()
+        XCTAssertEqual(eyes.left.center.x, 88.0 / 256, accuracy: 0.01)
+        XCTAssertEqual(eyes.right.center.x, 168.0 / 256, accuracy: 0.01)
+        XCTAssertEqual(eyes.left.center.y, 110.0 / 256, accuracy: 0.01)
+    }
+
+    func testPupilsInEyeballsBeatAMatchingPairElsewhere() throws {
+        // Nostrils: as dark, as round and as level as the pupils. Before, a tie like this
+        // was "ambiguous" and the image got no eyes at all.
+        var canvas = googly(pupilRadius: 8)
+        canvas.disc(112, 170, radius: 8, 0.05)
+        canvas.disc(144, 170, radius: 8, 0.05)
+        let eyes = try find(canvas).get()
+        XCTAssertEqual(eyes.left.center.y, 110.0 / 256, accuracy: 0.01, "the pair inside eyeballs, not the nostrils")
+    }
+
+    func testTheGlintOnAPupilIsNotAnEye() throws {
+        // A light dot inside each dark pupil is nested too, the other way round.
+        var canvas = googly(pupilRadius: 10)
+        canvas.disc(85, 107, radius: 2.5, 0.98)
+        canvas.disc(165, 107, radius: 2.5, 0.98)
+        let eyes = try find(canvas).get()
+        XCTAssertEqual(eyes.left.center.x, 88.0 / 256, accuracy: 0.02, "centred on the pupil, not its glint")
+    }
+
+    func testTwoPairsOfBareSpotsAreStillAmbiguous() {
+        // No eyeballs to tell them apart: the bonus must not turn a real tie into a guess.
+        var canvas = Canvas()
+        canvas.disc(96, 90, radius: 7, 0.15)
+        canvas.disc(160, 90, radius: 7, 0.15)
+        canvas.disc(96, 170, radius: 7, 0.15)
+        canvas.disc(160, 170, radius: 7, 0.15)
+        XCTAssertEqual(rejection(find(canvas)), .ambiguous)
+    }
+
     // MARK: - Finds
 
     func testFindsDarkEyesAndIgnoresTheMouth() throws {

@@ -12,8 +12,16 @@ final class EyeRigTests: XCTestCase {
     private static let size = (width: 400, height: 300)
     private static let centers = [(x: 130.0, y: 140.0), (x: 270.0, y: 140.0)]
 
+    private static let iris: RGB = (60, 110, 200)
+
     /// A drawn face: two round eyes (dark outline, white, dark pupil with a highlight).
-    private func canvas(eyeRadius: Double? = 40, pupilRadius: Double = 16, highlight: Bool = true) -> EyeRig.Bitmap {
+    /// `irisRadius` puts a blue iris round each pupil. `inward` moves each pupil (and
+    /// iris) toward the nose by that many pixels: cross-eyed, as mascots often are.
+    /// `rightPupilRadius` makes the right eye's pupil a different size from the left's.
+    private func canvas(
+        eyeRadius: Double? = 40, pupilRadius: Double = 16, highlight: Bool = true,
+        irisRadius: Double? = nil, inward: Double = 0, rightPupilRadius: Double? = nil
+    ) -> EyeRig.Bitmap {
         var bitmap = EyeRig.Bitmap(width: Self.size.width, height: Self.size.height)
         func disc(_ cx: Double, _ cy: Double, _ radius: Double, _ color: RGB) {
             for y in 0..<bitmap.height { for x in 0..<bitmap.width
@@ -26,22 +34,25 @@ final class EyeRigTests: XCTestCase {
             bitmap.rgba[i * 4] = Self.face.0; bitmap.rgba[i * 4 + 1] = Self.face.1
             bitmap.rgba[i * 4 + 2] = Self.face.2; bitmap.rgba[i * 4 + 3] = 255
         }
-        for c in Self.centers {
+        for (index, c) in Self.centers.enumerated() {
             if let eyeRadius {
                 disc(c.x, c.y, eyeRadius + 4, Self.outline)
                 disc(c.x, c.y, eyeRadius, Self.white)
             }
-            disc(c.x, c.y, pupilRadius, Self.pupil)
-            if highlight { disc(c.x - 5, c.y - 5, 3, Self.white) }
+            let px = c.x + (index == 0 ? inward : -inward)
+            if let irisRadius { disc(px, c.y, irisRadius, Self.iris) }
+            disc(px, c.y, index == 1 ? (rightPupilRadius ?? pupilRadius) : pupilRadius, Self.pupil)
+            if highlight { disc(px - 5, c.y - 5, 3, Self.white) }
         }
         return bitmap
     }
 
     /// What the detector would hand over: pupil centres, and an area ~2.4 pupils across.
-    private func eyes(pupilRadius: Double = 16) -> MascotEyes {
+    private func eyes(pupilRadius: Double = 16, inward: Double = 0) -> MascotEyes {
         func eye(_ c: (x: Double, y: Double)) -> MascotEyes.Eye {
-            MascotEyes.Eye(
-                center: CGPoint(x: c.x / Double(Self.size.width), y: c.y / Double(Self.size.height)),
+            let x = c.x + (c.x < 200 ? inward : -inward)
+            return MascotEyes.Eye(
+                center: CGPoint(x: x / Double(Self.size.width), y: c.y / Double(Self.size.height)),
                 size: CGSize(width: pupilRadius * 4.8 / Double(Self.size.width), height: pupilRadius * 4.8 / Double(Self.size.height))
             )
         }
@@ -269,6 +280,85 @@ final class EyeRigTests: XCTestCase {
         XCTAssertEqual(layers.info.travel.down * 300, 32 * EyeRig.maxTravel.height, accuracy: 1.5)
         let plate = pixel(layers.plate, of: layers, imageX: 130, imageY: 140)
         XCTAssertEqual(Array(plate[0..<3]), [200, 160, 120], "painted in with the face's colour")
+    }
+
+    // MARK: - Irises
+
+    func testAnIrisMovesWithItsPupilAsOnePiece() throws {
+        // Pupil 10 in an iris 22 in an eye 40: the iris has 18 px of white round it.
+        let base = canvas(pupilRadius: 10, irisRadius: 22)
+        let layers = try EyeRig.build(image: base, eyes: eyes(pupilRadius: 10)).get()
+        let c = Self.centers[0]
+        let x = Int(c.x), y = Int(c.y)
+
+        let plate = pixel(layers.plate, of: layers, imageX: x + 16, imageY: y)
+        XCTAssertEqual(plate[3], 255, "the plate covers where the iris was, not just the pupil")
+        XCTAssertTrue(isWhite(plate), "\(plate)")
+        let sprite = pixel(layers.pupils, of: layers, imageX: x + 16, imageY: y)
+        XCTAssertEqual(sprite[3], 255)
+        XCTAssertEqual(Array(sprite[0..<3]), [60, 110, 200], "the iris is on the moving layer")
+
+        let shift = Int((layers.info.travel.right * 400).rounded())
+        XCTAssertGreaterThan(shift, 6)
+        let drawn = composite(base, layers, gaze: CGPoint(x: 1, y: 0))
+        XCTAssertTrue(isWhite(pixel(drawn, x - 20, y)), "the iris's old left edge is eye white")
+        XCTAssertEqual(Array(pixel(drawn, x + shift + 16, y)[0..<3]), [60, 110, 200], "the iris moved")
+        XCTAssertTrue(isDark(pixel(drawn, x + shift + 6, y + 3)), "and its pupil with it")
+    }
+
+    func testAnIrisThatFillsTheEyeLeavesThePupilToMoveAlone() throws {
+        // No white at all: the iris is the eye, so the pupil moves inside it.
+        let base = canvas(eyeRadius: nil, pupilRadius: 10, highlight: false, irisRadius: 36)
+        let layers = try EyeRig.build(image: base, eyes: eyes(pupilRadius: 10)).get()
+        let c = Self.centers[0]
+        let plate = pixel(layers.plate, of: layers, imageX: Int(c.x), imageY: Int(c.y))
+        XCTAssertEqual(Array(plate[0..<3]), [60, 110, 200], "under the pupil is iris")
+        XCTAssertEqual(pixel(layers.plate, of: layers, imageX: Int(c.x) + 24, imageY: Int(c.y))[3], 0, "the iris itself is not cut out")
+        XCTAssertGreaterThan(layers.info.travel.right * 400, 3)
+    }
+
+    // MARK: - Eyes drawn off-centre
+
+    func testCrossEyedPupilsStillMoveBothWays() throws {
+        // Each pupil 20 px toward the nose: 4 px of room on its inner side, 44 on its outer.
+        // The smaller of the two per direction used to be the answer: next to nothing.
+        let layers = try EyeRig.build(image: canvas(inward: 20), eyes: eyes(inward: 20)).get()
+        let travel = layers.info.travel
+        XCTAssertGreaterThanOrEqual(travel.left * 400, 8)
+        XCTAssertGreaterThanOrEqual(travel.right * 400, 8)
+        XCTAssertEqual(travel.left, travel.right, accuracy: 2.0 / 400, "the eyes mirror each other, so does the travel")
+        // Never more than the tighter side's room plus the slip behind the rim.
+        XCTAssertLessThanOrEqual(travel.right * 400, 4 + 32 * EyeRig.slip + 2)
+    }
+
+    func testAPupilAgainstTheRimHasRoomOnItsOpenSide() throws {
+        // Hard against the inner rim (2 px of white left): with its margin it pokes out of
+        // the eye before moving at all, which once read as no room in any direction.
+        let layers = try EyeRig.build(image: canvas(inward: 22), eyes: eyes(inward: 22)).get()
+        XCTAssertGreaterThan(layers.info.travel.left * 400, 0)
+        XCTAssertGreaterThan(layers.info.travel.right * 400, 0)
+        XCTAssertGreaterThan(layers.info.travel.up * 300, 0)
+    }
+
+    func testAPupilSlidingBehindTheRimIsClippedByIt() throws {
+        let base = canvas(inward: 20)
+        let layers = try EyeRig.build(image: base, eyes: eyes(inward: 20)).get()
+        let drawn = composite(base, layers, gaze: CGPoint(x: 1, y: 0))
+        // The left eye's pupil has moved right, into its inner rim (the outline is 40...44
+        // px out). The face beyond the outline is untouched: what went past is hidden.
+        let c = Self.centers[0]
+        for y in 0..<base.height { for x in 0..<base.width {
+            let d = hypot(Double(x) + 0.5 - c.x, Double(y) + 0.5 - c.y)
+            if d > 45, d < 60 { XCTAssertEqual(pixel(drawn, x, y), pixel(base, x, y)) }
+        } }
+        // And it did go in: the white on the pupil's inner side is covered.
+        XCTAssertTrue(isDark(pixel(drawn, Int(c.x) + 37, Int(c.y))))
+    }
+
+    func testCutOutsOfDifferentSizesAreRefused() {
+        // One pupil a third bigger than the other: one of them is not just a pupil.
+        let result = EyeRig.build(image: canvas(pupilRadius: 12, rightPupilRadius: 16), eyes: eyes(pupilRadius: 12))
+        XCTAssertEqual(rejection(result), .cannotSeparate)
     }
 
     // MARK: - Rejections
