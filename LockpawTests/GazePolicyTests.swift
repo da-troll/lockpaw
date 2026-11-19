@@ -26,10 +26,24 @@ final class GazeTrackerTests: XCTestCase {
     }
 
     func testLooksAtTheHeadAndUpForATallPerson() throws {
-        // Head = 0.9 - 0.15 × 0.6 = 0.81 → gaze y = 1 - 1.62 = -0.62 (looking up).
+        // Head = 0.9 - 0.15 × 0.6 = 0.81 → 1 - 1.62 = -0.62, plus the downward bias:
+        // still looking up, less than the bare geometry says.
         let target = try XCTUnwrap(GazeTracker.target(for: [person(x: 0.5)]))
         XCTAssertEqual(target.x, 0, accuracy: 0.0001)
-        XCTAssertEqual(target.y, -0.62, accuracy: 0.0001)
+        XCTAssertEqual(target.y, -0.62 + GazeTracker.downwardBias, accuracy: 0.0001)
+        XCTAssertLessThan(target.y, 0)
+    }
+
+    func testTheGazeSitsLowerThanTheGeometry() throws {
+        XCTAssertGreaterThan(GazeTracker.downwardBias, 0)
+        // Someone whose head is dead centre in the frame: the eyes look slightly down at
+        // them, not level. Sideways is untouched.
+        let centred = try XCTUnwrap(GazeTracker.target(for: [CGRect(x: 0.4, y: 0.2, width: 0.2, height: 0.3 / 0.85)]))
+        XCTAssertEqual(centred.y, GazeTracker.downwardBias, accuracy: 0.001)
+        XCTAssertEqual(centred.x, 0, accuracy: 0.0001)
+        // And it never pushes past the limit.
+        let low = try XCTUnwrap(GazeTracker.target(for: [CGRect(x: 0.4, y: 0, width: 0.2, height: 0.1)]))
+        XCTAssertEqual(low.y, 1)
     }
 
     func testFollowsTheNearestPerson() throws {
