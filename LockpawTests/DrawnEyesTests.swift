@@ -73,6 +73,17 @@ final class DrawnEyesTests: XCTestCase {
         XCTAssertLessThanOrEqual(eyes.left.size.width * 256, 64 * DrawnEyes.maxOpeningWidth + 0.01)
     }
 
+    /// A robot's ear pads: dark, symmetric, level, and bigger than the eyes. Without the
+    /// shape and spacing limits they tie with the eyes and make the image ambiguous.
+    func testEarsAtTheSidesAreNotEyes() throws {
+        var canvas = face()
+        canvas.disc(36, 110, radius: 10, 0.15, ry: 27)
+        canvas.disc(220, 110, radius: 10, 0.15, ry: 27)
+        let eyes = try find(canvas).get()
+        XCTAssertEqual(eyes.left.center.x, 96.0 / 256, accuracy: 0.01)
+        XCTAssertEqual(eyes.right.center.x, 160.0 / 256, accuracy: 0.01)
+    }
+
     func testFindsLightEyesOnADarkFace() throws {
         var canvas = Canvas()
         canvas.pixels.luminance = [Float](repeating: 0.2, count: 256 * 256)

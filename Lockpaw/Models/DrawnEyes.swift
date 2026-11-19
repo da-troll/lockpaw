@@ -13,7 +13,7 @@ import Foundation
 /// Pure, so it's tested on synthetic images. `EyeFinder` only feeds it pixels.
 enum DrawnEyes {
     /// Bumped when the rules below change, so stored results are re-checked.
-    static let version = 1
+    static let version = 2
 
     /// Images are scanned at this size; plenty for eyes, trivial to scan.
     static let workingSize = 256
@@ -25,14 +25,16 @@ enum DrawnEyes {
 
     /// An eye's area as a share of the image: below, specks; above, a whole face or panel.
     static let eyeArea: ClosedRange<CGFloat> = 0.0003...0.03
-    /// Width over height: dots and ovals, not lines.
-    static let eyeAspect: ClosedRange<CGFloat> = 0.35...2.5
+    /// Width over height: dots and ovals, not lines, and not the tall pads of a robot's or
+    /// headphone's ears (those run ~0.4).
+    static let eyeAspect: ClosedRange<CGFloat> = 0.5...2.5
     /// Share of its bounding box a spot fills: a disc fills ~0.79, a ring or a squiggle far less.
     static let minFill: CGFloat = 0.45
     /// The two eyes of a pair: the bigger no more than this times the smaller.
     static let maxSizeRatio: CGFloat = 2
-    /// Eye spacing in eye widths: closer is one smudged eye, further is two unrelated dots.
-    static let spacing: ClosedRange<CGFloat> = 1.5...9
+    /// Eye spacing in eye widths, centre to centre: closer is one smudged feature, further
+    /// is two things at the sides of the head (ears, buttons) rather than on the face.
+    static let spacing: ClosedRange<CGFloat> = 1.5...6.5
     /// A runner-up pair scoring within this share of the best, elsewhere in the image,
     /// makes the answer ambiguous.
     static let ambiguity: CGFloat = 0.9
