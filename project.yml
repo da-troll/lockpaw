@@ -118,6 +118,8 @@ targets:
     platform: macOS
     sources:
       - path: LockpawTests
+        excludes:
+          - "LocalFixtures/**" # private real images, read from disk by RealMascotEyesTests
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.eriknielsen.lockpaw.tests
