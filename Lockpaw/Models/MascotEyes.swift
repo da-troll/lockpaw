@@ -33,6 +33,22 @@ struct MascotEyes: Codable, Equatable {
     static let travelFraction = CGSize(width: 0.18, height: 0.12)
 }
 
+/// What's stored next to the custom image: the eyes, or why there are none, and the
+/// detector revision that decided. A stale revision means "look again".
+struct MascotEyesRecord: Codable, Equatable {
+    var revision: Int
+    var eyes: MascotEyes?
+    var rejection: EyeRejection?
+
+    init(revision: Int, result: Result<MascotEyes, EyeRejection>) {
+        self.revision = revision
+        switch result {
+        case .success(let eyes): self.eyes = eyes; self.rejection = nil
+        case .failure(let reason): self.eyes = nil; self.rejection = reason
+        }
+    }
+}
+
 /// One face as Vision reported it, in image pixels with a top-left origin.
 struct FaceCandidate: Equatable {
     var bounds: CGRect
@@ -47,7 +63,7 @@ struct FaceCandidate: Equatable {
 }
 
 /// Why an image can't have moving eyes. Each reads as the Settings detail line.
-enum EyeRejection: Error, Equatable {
+enum EyeRejection: String, Error, Equatable, Codable {
     case noFace
     case multipleFaces
     case unsure

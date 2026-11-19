@@ -10,7 +10,17 @@ final class CustomMascotTests: XCTestCase {
     override func setUpWithError() throws {
         directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("CustomMascotTests-\(UUID().uuidString)", isDirectory: true)
-        store = CustomMascot(directory: directory)
+        store = CustomMascot(directory: directory, findEyes: { _ in .failure(.noFace) }, eyesRevision: 3)
+    }
+
+    private static let sampleEyes = MascotEyes(
+        left: .init(center: CGPoint(x: 0.4, y: 0.4), size: CGSize(width: 0.08, height: 0.03)),
+        right: .init(center: CGPoint(x: 0.6, y: 0.4), size: CGSize(width: 0.08, height: 0.03)),
+        revision: 3
+    )
+
+    private func makeStore(finding result: Result<MascotEyes, EyeRejection>, revision: Int = 3) -> CustomMascot {
+        CustomMascot(directory: directory, findEyes: { _ in result }, eyesRevision: revision)
     }
 
     override func tearDownWithError() throws {
@@ -178,5 +188,45 @@ final class CustomMascotTests: XCTestCase {
         let url = sources.appendingPathComponent("source.png")
         try data.write(to: url)
         return url
+    }
+
+    // MARK: - Eyes (found once at install, kept next to the image)
+
+    func testInstallFindsAndStoresTheEyes() throws {
+        let eyed = makeStore(finding: .success(Self.sampleEyes))
+        try eyed.install(from: makeImageFile(pixels: 16))
+
+        XCTAssertEqual(eyed.eyes, Self.sampleEyes)
+        XCTAssertNil(eyed.eyeRejection)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: eyed.eyesURL.path))
+        XCTAssertEqual(makeStore(finding: .failure(.noFace)).eyes, Self.sampleEyes, "a new store reads the record, it doesn't re-detect")
+    }
+
+    func testAnImageWithoutEyesStillInstalls() throws {
+        let eyed = makeStore(finding: .failure(.multipleFaces))
+        try eyed.install(from: makeImageFile(pixels: 16))
+
+        XCTAssertTrue(eyed.hasImage)
+        XCTAssertNil(eyed.eyes)
+        XCTAssertEqual(eyed.eyeRejection, .multipleFaces)
+    }
+
+    func testAnOlderDetectorsRecordIsIgnored() throws {
+        try makeStore(finding: .success(Self.sampleEyes), revision: 2).install(from: makeImageFile(pixels: 16))
+
+        let newer = makeStore(finding: .failure(.noFace), revision: 3)
+        XCTAssertNil(newer.eyes)
+        XCTAssertNil(newer.eyeRejection)
+        newer.refreshEyesIfNeeded()
+        XCTAssertEqual(newer.eyeRejection, .noFace)
+    }
+
+    func testRemoveForgetsTheEyes() throws {
+        let eyed = makeStore(finding: .success(Self.sampleEyes))
+        try eyed.install(from: makeImageFile(pixels: 16))
+        eyed.remove()
+
+        XCTAssertNil(eyed.eyes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: eyed.eyesURL.path))
     }
 }

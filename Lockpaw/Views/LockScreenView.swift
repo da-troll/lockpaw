@@ -18,6 +18,7 @@ struct LockScreenView: View {
     @AppStorage("showMessage") private var showMessage = true
     @AppStorage("lockMessage") private var message = Constants.defaultLockMessage
     @AppStorage(Mascot.storageKey) private var selectedMascot = Mascot.defaultValue
+    @AppStorage(GazeController.enabledKey) private var gazeEnabled = GazeController.defaultEnabled
     @AppStorage(HotkeyConfig.requireAuthenticationToUnlockKey) private var requiresAuthenticationToUnlock = HotkeyConfig.defaultRequireAuthenticationToUnlock
 
     @State private var phase: CGFloat = 0
@@ -82,7 +83,7 @@ struct LockScreenView: View {
                                         .blur(radius: 12)
                                         .offset(y: mascotSize * 0.45)
 
-                                    MascotImage(mascot)
+                                    MascotImage(mascot, gazes: gazeEnabled && !reduceMotion)
                                         .frame(width: mascotSize, height: mascotSize)
                                         .shadow(color: Color("LockpawTeal").opacity(0.15 + breathe * 0.08), radius: 35 + breathe * 8, y: 10)
                                         .shadow(color: .black.opacity(0.15), radius: 45, y: 30)
