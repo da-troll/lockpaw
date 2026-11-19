@@ -12,8 +12,9 @@ import Foundation
 ///
 /// Pure, so it's tested on synthetic images. `EyeFinder` only feeds it pixels.
 enum DrawnEyes {
-    /// Bumped when the rules below change, so stored results are re-checked.
-    static let version = 2
+    /// Bumped when the rules below change (or when a drawing gets tried: 3 is the hand-off
+    /// from the photo pass ignoring stray tiny faces), so stored results are re-checked.
+    static let version = 3
 
     /// Images are scanned at this size; plenty for eyes, trivial to scan.
     static let workingSize = 256

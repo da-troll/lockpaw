@@ -19,8 +19,25 @@ final class CustomMascotTests: XCTestCase {
         revision: 3
     )
 
-    private func makeStore(finding result: Result<MascotEyes, EyeRejection>, revision: Int = 3) -> CustomMascot {
-        CustomMascot(directory: directory, findEyes: { _ in result }, eyesRevision: revision)
+    private static let sampleRigInfo = EyeRig.Info(
+        version: 1,
+        rect: CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.25),
+        travel: .init(left: 0.02, right: 0.02, up: 0.01, down: 0.01)
+    )
+
+    /// Stand-in layers: the store only has to keep them and hand them back.
+    private static var sampleLayers: EyeRig.Layers {
+        let layer = EyeRig.Bitmap(width: 8, height: 4, rgba: [UInt8](repeating: 200, count: 8 * 4 * 4))
+        return EyeRig.Layers(plate: layer, pupils: layer, clip: layer, info: sampleRigInfo)
+    }
+
+    private func makeStore(
+        finding result: Result<MascotEyes, EyeRejection>,
+        rig: Result<EyeRig.Layers, EyeRejection>? = nil,
+        revision: Int = 3
+    ) -> CustomMascot {
+        let rig = rig ?? .success(Self.sampleLayers)
+        return CustomMascot(directory: directory, findEyes: { _ in result }, buildRig: { _, _ in rig }, eyesRevision: revision)
     }
 
     override func tearDownWithError() throws {
@@ -224,9 +241,66 @@ final class CustomMascotTests: XCTestCase {
     func testRemoveForgetsTheEyes() throws {
         let eyed = makeStore(finding: .success(Self.sampleEyes))
         try eyed.install(from: makeImageFile(pixels: 16))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: eyed.rigURL.path))
         eyed.remove()
 
         XCTAssertNil(eyed.eyes)
+        XCTAssertNil(eyed.rig)
         XCTAssertFalse(FileManager.default.fileExists(atPath: eyed.eyesURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: eyed.rigURL.path))
+    }
+
+    // MARK: - Eye layers (cut once at install, kept next to the image)
+
+    func testInstallBuildsAndStoresTheEyeLayers() throws {
+        let eyed = makeStore(finding: .success(Self.sampleEyes))
+        try eyed.install(from: makeImageFile(pixels: 16))
+
+        let rig = try XCTUnwrap(eyed.rig)
+        XCTAssertEqual(rig.info, Self.sampleRigInfo)
+        XCTAssertEqual(rig.pupils.width, 8)
+        XCTAssertEqual(rig.pupils.height, 4)
+
+        // A new store reads them back; it doesn't build again.
+        let reopened = makeStore(finding: .failure(.noFace), rig: .failure(.cannotSeparate))
+        XCTAssertEqual(reopened.eyes, Self.sampleEyes)
+        XCTAssertEqual(reopened.rig?.info, Self.sampleRigInfo)
+        XCTAssertEqual(reopened.rig?.clip.width, 8)
+    }
+
+    func testEyesThatCannotBeCutOutAreARejection() throws {
+        // Found, but no layers: there is nothing to move, so the image has no eyes to offer.
+        let eyed = makeStore(finding: .success(Self.sampleEyes), rig: .failure(.noRoomToMove))
+        try eyed.install(from: makeImageFile(pixels: 16))
+
+        XCTAssertTrue(eyed.hasImage)
+        XCTAssertNil(eyed.eyes)
+        XCTAssertNil(eyed.rig)
+        XCTAssertEqual(eyed.eyeRejection, .noRoomToMove)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: eyed.rigURL.path))
+        XCTAssertEqual(makeStore(finding: .success(Self.sampleEyes)).eyeRejection, .noRoomToMove, "the verdict is kept, not retried every launch")
+    }
+
+    func testReplacingWithAnImageWithoutEyesDropsTheOldLayers() throws {
+        try makeStore(finding: .success(Self.sampleEyes)).install(from: makeImageFile(pixels: 16))
+        let replaced = makeStore(finding: .failure(.noFace))
+        XCTAssertNotNil(replaced.rig)
+        try replaced.install(from: makeImageFile(pixels: 16))
+
+        XCTAssertNil(replaced.rig)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replaced.rigURL.path))
+    }
+
+    func testLostLayersAreBuiltAgain() throws {
+        let eyed = makeStore(finding: .success(Self.sampleEyes))
+        try eyed.install(from: makeImageFile(pixels: 16))
+        try FileManager.default.removeItem(at: eyed.rigURL)
+
+        let reopened = makeStore(finding: .success(Self.sampleEyes))
+        XCTAssertNil(reopened.eyes, "eyes without layers can't move: not offered")
+        XCTAssertNil(reopened.eyeRejection, "and not a verdict either, so it is looked at again")
+        reopened.refreshEyesIfNeeded()
+        XCTAssertEqual(reopened.eyes, Self.sampleEyes)
+        XCTAssertNotNil(reopened.rig)
     }
 }

@@ -28,6 +28,47 @@ final class MascotEyesTests: XCTestCase {
         return nil
     }
 
+    // MARK: - Photo or drawing
+
+    /// What Vision reported in a close-up of a drawn owl: a "face" 3% of the image wide, in
+    /// a gear at the top, at full confidence. (Measured on the image that showed the bug.)
+    private var strayFace: FaceCandidate {
+        face(bounds: CGRect(x: 269, y: 77, width: 33, height: 33), confidence: 1,
+             left: CGPoint(x: 272, y: 84), right: CGPoint(x: 282, y: 82), leftBox: nil, rightBox: nil)
+    }
+
+    func testAStrayTinyFaceDoesNotVetoADrawing() {
+        XCTAssertEqual(rejection(evaluate([strayFace])), .eyesTooSmall, "the photo pass alone still says no")
+        XCTAssertFalse(EyeDetectionPolicy.couldBeTheSubject(strayFace, imageSize: image))
+        XCTAssertTrue(EyeDetectionPolicy.triesAsDrawing(after: .eyesTooSmall, faces: [strayFace], imageSize: image))
+    }
+
+    func testNoClearFaceIsTriedAsADrawing() {
+        for reason in [EyeRejection.noFace, .unsure, .eyesNotFound] {
+            XCTAssertTrue(EyeDetectionPolicy.triesAsDrawing(after: reason, faces: [face()], imageSize: image), "\(reason)")
+        }
+        XCTAssertTrue(EyeDetectionPolicy.triesAsDrawing(after: .noFace, faces: [], imageSize: image))
+    }
+
+    func testARejectedRealFaceIsNeverTriedAsADrawing() {
+        // A face that fills the frame but is tilted, doubled or odd: a photo, so spot-finding
+        // would find nostrils. A stray tiny face next to it changes nothing.
+        XCTAssertTrue(EyeDetectionPolicy.couldBeTheSubject(face(), imageSize: image))
+        for reason in [EyeRejection.turnedOrTilted, .multipleFaces, .implausible, .eyesTooSmall] {
+            XCTAssertFalse(EyeDetectionPolicy.triesAsDrawing(after: reason, faces: [face()], imageSize: image), "\(reason)")
+            XCTAssertFalse(EyeDetectionPolicy.triesAsDrawing(after: reason, faces: [strayFace, face()], imageSize: image), "\(reason)")
+        }
+    }
+
+    func testSubjectSizeIsTheSmallestFaceThatCouldPass() {
+        // Pupils at most 0.7 of the face width apart, and at least 12% of the image: a face
+        // narrower than 120 / 0.7 ≈ 171 px of 1000 can never qualify.
+        let tooNarrow = face(bounds: CGRect(x: 400, y: 400, width: 170, height: 190))
+        let wideEnough = face(bounds: CGRect(x: 400, y: 400, width: 172, height: 190))
+        XCTAssertFalse(EyeDetectionPolicy.couldBeTheSubject(tooNarrow, imageSize: image))
+        XCTAssertTrue(EyeDetectionPolicy.couldBeTheSubject(wideEnough, imageSize: image))
+    }
+
     // MARK: - Accepts
 
     func testAcceptsOneClearFace() throws {
@@ -117,31 +158,6 @@ final class MascotEyesTests: XCTestCase {
     func testRejectsPupilsOutsideTheFace() {
         let offFace = face(bounds: CGRect(x: 300, y: 500, width: 400, height: 450))
         XCTAssertEqual(rejection(evaluate([offFace])), .implausible)
-    }
-
-    // MARK: - Layout
-
-    func testFittedRectLetterboxesAWideImage() {
-        let rect = EyeLayout.fittedRect(imageSize: CGSize(width: 200, height: 100), in: CGSize(width: 300, height: 300))
-        XCTAssertEqual(rect, CGRect(x: 0, y: 75, width: 300, height: 150))
-    }
-
-    func testFittedRectHandlesNothingToFit() {
-        XCTAssertEqual(EyeLayout.fittedRect(imageSize: .zero, in: CGSize(width: 10, height: 10)), .zero)
-    }
-
-    func testEyeRectScalesWithTheFittedImage() {
-        let eye = MascotEyes.Eye(center: CGPoint(x: 0.5, y: 0.25), size: CGSize(width: 0.2, height: 0.1))
-        XCTAssertEqual(EyeLayout.eyeRect(eye, fittedSize: CGSize(width: 200, height: 400)),
-                       CGRect(x: 80, y: 80, width: 40, height: 40))
-    }
-
-    func testPupilOffsetIsSmallAndClamped() {
-        let eye = MascotEyes.Eye(center: .zero, size: CGSize(width: 0.1, height: 0.05))
-        let eyes = MascotEyes(left: eye, right: eye, revision: 3)
-        let full = EyeLayout.pupilOffset(gaze: CGPoint(x: 5, y: -5), eyes: eyes, fittedSize: CGSize(width: 1000, height: 1000))
-        XCTAssertEqual(full.width, 100 * MascotEyes.travelFraction.width, accuracy: 0.0001)
-        XCTAssertEqual(full.height, -50 * MascotEyes.travelFraction.height, accuracy: 0.0001)
     }
 }
 

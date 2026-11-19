@@ -10,13 +10,13 @@ import Foundation
 /// cute one, so "no gaze for this image" is the honest answer.
 ///
 /// Coordinates are normalized to the image (0...1 on each axis, top-left origin) so they
-/// survive any render size; `EyeLayout` maps them into the fitted frame.
+/// survive any render size. `EyeRig` turns them into the layers that actually move.
 struct MascotEyes: Codable, Equatable {
     struct Eye: Codable, Equatable {
         /// The pupil, normalized to the image.
         var center: CGPoint
-        /// The visible eye opening, normalized to the image: the region whose pixels slide
-        /// as the mascot looks around. Kept inside the eye so eyelids barely smear.
+        /// Roughly the eye around the pupil, normalized to the image: where `EyeRig` looks
+        /// for the pupil's edge when it cuts the pupil out.
         var size: CGSize
     }
 
@@ -27,21 +27,21 @@ struct MascotEyes: Codable, Equatable {
     /// The Vision revision these were found with. A different revision may place pupils a
     /// little differently, so a stored result is only trusted for the revision that made it.
     var revision: Int
-
-    /// How far the pupils may travel, as a fraction of the eye opening. Small on purpose:
-    /// the whole opening slides, eyelids included, and past ~a fifth the lids visibly drift.
-    static let travelFraction = CGSize(width: 0.18, height: 0.12)
 }
 
-/// What's stored next to the custom image: the eyes, or why there are none, and the
-/// detector revision that decided. A stale revision means "look again".
+/// What's stored next to the custom image: the eyes and where their cut-out layers sit, or
+/// why there are none, and the detector revision that decided. A stale revision means
+/// "look again".
 struct MascotEyesRecord: Codable, Equatable {
     var revision: Int
     var eyes: MascotEyes?
     var rejection: EyeRejection?
+    /// Present with `eyes`: the layers themselves are an image file beside this record.
+    var rig: EyeRig.Info?
 
-    init(revision: Int, result: Result<MascotEyes, EyeRejection>) {
+    init(revision: Int, result: Result<MascotEyes, EyeRejection>, rig: EyeRig.Info? = nil) {
         self.revision = revision
+        self.rig = rig
         switch result {
         case .success(let eyes): self.eyes = eyes; self.rejection = nil
         case .failure(let reason): self.eyes = nil; self.rejection = reason
@@ -72,6 +72,8 @@ enum EyeRejection: String, Error, Equatable, Codable {
     case turnedOrTilted
     case implausible
     case ambiguous
+    case cannotSeparate
+    case noRoomToMove
 
     var message: String {
         switch self {
@@ -83,6 +85,8 @@ enum EyeRejection: String, Error, Equatable, Codable {
         case .turnedOrTilted: return "The face is turned or tilted. A straight-on face works best."
         case .implausible: return "The eyes found don't look right for this face."
         case .ambiguous: return "Found more than one pair of eye-like spots, so it can't tell which are the eyes."
+        case .cannotSeparate: return "Found the eyes, but couldn't cut the pupils out cleanly."
+        case .noRoomToMove: return "The pupils fill the eyes, so there's no room for them to move."
         }
     }
 }
@@ -155,42 +159,30 @@ enum EyeDetectionPolicy {
     }
 
     private static func area(_ rect: CGRect) -> CGFloat { max(0, rect.width) * max(0, rect.height) }
-}
 
-/// Where things land when an image is drawn `scaledToFit` into a frame, as `MascotImage` does.
-enum EyeLayout {
-    /// The rect the image actually occupies inside `frame` (letterboxed, centered).
-    static func fittedRect(imageSize: CGSize, in frame: CGSize) -> CGRect {
-        guard imageSize.width > 0, imageSize.height > 0, frame.width > 0, frame.height > 0 else { return .zero }
-        let scale = min(frame.width / imageSize.width, frame.height / imageSize.height)
-        let size = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
-        return CGRect(
-            x: (frame.width - size.width) / 2,
-            y: (frame.height - size.height) / 2,
-            width: size.width,
-            height: size.height
-        )
+    // MARK: - Photo or drawing
+
+    /// Verdicts that mean "no clear human face here", worth trying as a drawing.
+    static let unclearFace: Set<EyeRejection> = [.noFace, .unsure, .eyesNotFound]
+
+    /// Whether a face Vision found is big enough to be what the image is of. Narrower than
+    /// this and its pupils could never be `minPupilDistance` apart, whatever else is true
+    /// of it. Vision reports such "faces" with full confidence in ornament: a gear at the
+    /// top of a steampunk owl that fills the frame, a button, a pattern in a border.
+    static func couldBeTheSubject(_ face: FaceCandidate, imageSize: CGSize) -> Bool {
+        face.bounds.width * pupilToFaceWidth.upperBound >= min(imageSize.width, imageSize.height) * minPupilDistance
     }
 
-    /// The eye opening in the fitted image's own coordinates (origin at its top-left).
-    static func eyeRect(_ eye: MascotEyes.Eye, fittedSize: CGSize) -> CGRect {
-        CGRect(
-            x: (eye.center.x - eye.size.width / 2) * fittedSize.width,
-            y: (eye.center.y - eye.size.height / 2) * fittedSize.height,
-            width: eye.size.width * fittedSize.width,
-            height: eye.size.height * fittedSize.height
-        )
-    }
-
-    /// How far the pupils shift, in points, for a gaze in -1...1 on each axis.
-    /// Both eyes move together, so the travel is set by the smaller opening.
-    static func pupilOffset(gaze: CGPoint, eyes: MascotEyes, fittedSize: CGSize) -> CGSize {
-        let width = min(eyes.left.size.width, eyes.right.size.width) * fittedSize.width
-        let height = min(eyes.left.size.height, eyes.right.size.height) * fittedSize.height
-        return CGSize(
-            width: gaze.x.clamped(to: -1...1) * width * MascotEyes.travelFraction.width,
-            height: gaze.y.clamped(to: -1...1) * height * MascotEyes.travelFraction.height
-        )
+    /// After the photo pass rejected the image: whether to look for drawn eyes instead.
+    ///
+    /// Yes when Vision saw no clear face, and yes when every face it saw is too small to be
+    /// the subject (a stray match must not veto a close-up of a drawn face). No when a
+    /// subject-sized face was found and rejected (tilted, two people, eyes that don't fit):
+    /// spot-finding on that photo would latch onto nostrils. Eye spots have to be at least
+    /// `minPupilDistance` apart, wider than any face dismissed here, so they can't be its
+    /// nostrils either.
+    static func triesAsDrawing(after rejection: EyeRejection, faces: [FaceCandidate], imageSize: CGSize) -> Bool {
+        unclearFace.contains(rejection) || !faces.contains { couldBeTheSubject($0, imageSize: imageSize) }
     }
 }
 
