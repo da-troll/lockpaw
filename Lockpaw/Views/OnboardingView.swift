@@ -123,7 +123,7 @@ struct OnboardingView: View {
                     .lineSpacing(2)
             }
 
-            Text("Lockpaw is a visual privacy tool, not a security lock. For real security, use your Mac's lock screen (Ctrl+Cmd+Q).")
+            Text("Lockpaw is a visual privacy tool, not a security lock. For real security, use your Mac's lock screen (\u{2303}\u{2318}Q).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
