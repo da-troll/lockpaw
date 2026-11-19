@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 struct LockScreenSettingsPane: View {
     @AppStorage(Mascot.storageKey) private var selectedMascot = Mascot.defaultValue
     @AppStorage(SeasonalSkin.enabledKey) private var seasonalMascots = true
+    @AppStorage(LockScreenSize.mascotStorageKey) private var mascotSize = LockScreenSize.defaultValue.rawValue
+    @AppStorage(LockScreenSize.textStorageKey) private var textSize = LockScreenSize.defaultValue.rawValue
     @AppStorage("showMessage") private var showMessage = true
     @AppStorage("lockMessage") private var message = Constants.defaultLockMessage
     @AppStorage("multiDisplayMode") private var multiDisplayMode = 0 // 0 = Ambient, 1 = Mirror
@@ -25,7 +27,13 @@ struct LockScreenSettingsPane: View {
     var body: some View {
         Form {
             Section {
-                MascotPreview(mascot: Mascot.effective(from: selectedMascot), showsMessage: showMessage, message: message)
+                MascotPreview(
+                    mascot: Mascot.effective(from: selectedMascot),
+                    showsMessage: showMessage,
+                    message: message,
+                    mascotSize: LockScreenSize.resolved(from: mascotSize),
+                    textSize: LockScreenSize.resolved(from: textSize)
+                )
                     .listRowInsets(EdgeInsets())
 
                 if mascotChoices.count > 5 {
@@ -62,6 +70,16 @@ struct LockScreenSettingsPane: View {
                         }
                     }
                 }
+
+                if Mascot.effective(from: selectedMascot) != .hidden {
+                    Picker("Mascot size", selection: $mascotSize) { sizeOptions }
+                        .pickerStyle(.segmented)
+                }
+
+                Picker(selection: $textSize) { sizeOptions } label: {
+                    SettingLabel("Text size", detail: "The message, the timer and the agents waiting.")
+                }
+                .pickerStyle(.segmented)
 
                 if supporter.isSupporter {
                     Toggle(isOn: $seasonalMascots) {
@@ -132,6 +150,11 @@ struct LockScreenSettingsPane: View {
         ForEach(mascotChoices) { Text($0.displayName).tag($0.rawValue) }
     }
 
+    @ViewBuilder
+    private var sizeOptions: some View {
+        ForEach(LockScreenSize.allCases) { Text($0.displayName).tag($0.rawValue) }
+    }
+
     /// On only with eyes to move and the camera granted. Turning it on is where the camera
     /// permission is asked, here in Settings, never on the lock screen.
     private var gazeBinding: Binding<Bool> {
@@ -174,8 +197,19 @@ private struct MascotPreview: View {
     let mascot: Mascot
     let showsMessage: Bool
     let message: String
+    let mascotSize: LockScreenSize
+    let textSize: LockScreenSize
+
+    /// Observed so the preview follows Choose, Replace and Remove: none of them change
+    /// this view's inputs.
+    @ObservedObject private var customMascot = CustomMascot.shared
+
+    /// The mascot's height here at Small; the other sizes scale it as the lock screen does.
+    /// Sized so the Large mascot with Large text still fits the preview.
+    private static let mascotHeight: CGFloat = 56
 
     var body: some View {
+        let mascotHeight = Self.mascotHeight * mascotSize.mascotScale
         ZStack {
             LinearGradient(
                 colors: [Color(red: 0.03, green: 0.035, blue: 0.045), Color(red: 0.005, green: 0.006, blue: 0.01)],
@@ -184,29 +218,31 @@ private struct MascotPreview: View {
             RadialGradient(colors: [Color("LockpawTeal").opacity(0.16), .clear], center: .center, startRadius: 4, endRadius: 150)
 
             VStack(spacing: 10) {
-                if CustomMascot.shared.canShow(mascot) {
+                if customMascot.canShow(mascot) {
                     MascotImage(mascot)
-                        .frame(height: 74)
+                        .frame(height: mascotHeight)
                         .shadow(color: Color("LockpawTeal").opacity(0.25), radius: 18)
                 } else if mascot == .custom {
                     Text("No image chosen")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.4))
-                        .frame(height: 74)
+                        .frame(height: mascotHeight)
                 }
                 if showsMessage, !message.isEmpty {
                     Text(message)
-                        .font(.system(size: 11, weight: .light))
+                        .font(.system(size: 10 * textSize.textScale, weight: .light))
                         .foregroundStyle(.white.opacity(0.55))
                         .lineLimit(1)
                         .padding(.horizontal, 24)
                 }
                 Text("00:42")
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.system(size: 9 * textSize.textScale, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.35))
             }
         }
-        .frame(height: 168)
+        .frame(height: 190)
+        .animation(.snappy(duration: 0.25), value: mascotSize)
+        .animation(.snappy(duration: 0.25), value: textSize)
         .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Preview of the lock screen with \(mascot == .hidden ? "no mascot" : mascot.displayName)")
