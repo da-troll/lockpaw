@@ -10,15 +10,13 @@ struct OnboardingView: View {
     @State private var accessibilityTimer: Timer?
     @State private var hotkeyConflict: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(Mascot.storageKey) private var selectedMascot = Mascot.defaultValue
     @State private var mascotBreath = false
     @State private var pulse: CGFloat = 0
 
     private let totalSteps = 5
 
-    /// Always the Lockpaw dog, whatever mascot Settings has stored: onboarding also comes
-    /// back after an update or a permission reset, and it is the app introducing itself,
-    /// not a preview of the user's lock screen.
-    private let mascot = Mascot.dog
+    private var mascot: Mascot { Mascot.effective(from: selectedMascot) }
 
     var body: some View {
         VStack(spacing: 0) {
