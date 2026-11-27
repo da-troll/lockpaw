@@ -17,6 +17,11 @@ struct MascotImage: View {
     /// lock screen's resting mascot asks for this; previews never touch the camera.
     let gazes: Bool
 
+    /// The custom image lives on disk, not in this view's inputs: without observing the
+    /// store, replacing or removing it leaves `MascotImage(.custom)` equal to itself and
+    /// SwiftUI keeps the old pixels on screen.
+    @ObservedObject private var customMascot = CustomMascot.shared
+
     init(_ mascot: Mascot, gazes: Bool = false) {
         self.mascot = mascot
         self.gazes = gazes
@@ -30,13 +35,17 @@ struct MascotImage: View {
                 .scaledToFit()
 
             if mascot == .custom {
-                ZStack {
-                    base
-                    if gazes, let eyes = CustomMascot.shared.eyes, let custom = CustomMascot.shared.loadImage() {
-                        MascotGazeOverlay(image: custom, eyes: eyes)
+                // The eyes go on as an overlay, not a ZStack sibling: the overlay is a
+                // GeometryReader, and in a ZStack it stretched the stack to the whole
+                // proposed frame. The feathered mask then spanned that square instead of
+                // the fitted image, so a non-square image kept hard edges on its short side.
+                base
+                    .overlay {
+                        if gazes, let rig = customMascot.rig {
+                            MascotGazeOverlay(rig: rig)
+                        }
                     }
-                }
-                .mask { featheredEdge }
+                    .mask { featheredEdge }
             } else {
                 base
             }
@@ -53,7 +62,7 @@ struct MascotImage: View {
             isSupporter: Supporter.shared.isSupporter,
             assetExists: Mascot.bundledAssetExists
         ) { return Image(assetName) }
-        if mascot == .custom, let custom = CustomMascot.shared.loadImage() { return Image(nsImage: custom) }
+        if mascot == .custom, let custom = customMascot.loadImage() { return Image(nsImage: custom) }
         return nil
     }
 

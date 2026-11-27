@@ -5,39 +5,46 @@ import Vision
 ///
 /// 1. Photos: Vision's face landmarks, which ship with macOS (no model to bundle, the same
 ///    answer for the same image). Judged by `EyeDetectionPolicy`.
-/// 2. Drawings: when Vision sees no clear human face, `DrawnEyes` looks for one pair of
-///    eye-like spots. A photo whose face Vision *did* find but rejected (tilted, too small,
-///    two people) stays rejected: spot-finding on a photo would latch onto nostrils.
+/// 2. Drawings: when Vision sees no clear human face, or only "faces" too small to be the
+///    subject, `DrawnEyes` looks for one pair of eye-like spots. A photo whose face Vision
+///    *did* find but rejected (tilted, two people) stays rejected: spot-finding on a photo
+///    would latch onto nostrils. `EyeDetectionPolicy.triesAsDrawing` decides.
 ///
 /// Run once per image, at install, never per frame.
 enum EyeFinder {
-    /// Both passes' versions in one number, so a stored result made by either older pass is
-    /// re-detected. Vision's revision is pinned so an OS update can't quietly move pupils.
-    static let revision = VNDetectFaceLandmarksRequestRevision3 * 100 + DrawnEyes.version
-
-    /// Vision's verdicts that mean "no clear human face here", worth trying as a drawing.
-    private static let tryAsDrawing: Set<EyeRejection> = [.noFace, .unsure, .eyesNotFound]
+    /// Both passes' versions and the rig's in one number, so a stored result made by any
+    /// older step (or an older hand-off between the passes) is redone. Vision's revision
+    /// is pinned so an OS update can't quietly move pupils.
+    static let revision = VNDetectFaceLandmarksRequestRevision3 * 10_000 + DrawnEyes.version * 100 + EyeRig.version
 
     /// Blocking; tens of milliseconds for a 1024 px image.
     static func find(in image: CGImage) -> Result<MascotEyes, EyeRejection> {
-        let photo = findInPhoto(image)
-        guard case .failure(let reason) = photo, tryAsDrawing.contains(reason) else { return photo }
-        guard let pixels = pixels(of: image) else { return photo }
-        return DrawnEyes.find(in: pixels, revision: revision)
+        let size = CGSize(width: image.width, height: image.height)
+        let faces = facesInPhoto(image)
+        let photo = EyeDetectionPolicy.evaluate(faces, imageSize: size, revision: revision)
+        guard case .failure(let reason) = photo,
+              EyeDetectionPolicy.triesAsDrawing(after: reason, faces: faces, imageSize: size),
+              let pixels = pixels(of: image)
+        else { return photo }
+
+        let drawn = DrawnEyes.find(in: pixels, revision: revision)
+        // A small face that was real (someone far from the camera) and no drawn eyes
+        // either: "crop closer" is the useful thing to say, not "no face".
+        if case .failure = drawn, !EyeDetectionPolicy.unclearFace.contains(reason) { return photo }
+        return drawn
     }
 
-    private static func findInPhoto(_ image: CGImage) -> Result<MascotEyes, EyeRejection> {
+    private static func facesInPhoto(_ image: CGImage) -> [FaceCandidate] {
         let request = VNDetectFaceLandmarksRequest()
         request.revision = VNDetectFaceLandmarksRequestRevision3
         let handler = VNImageRequestHandler(cgImage: image, orientation: .up, options: [:])
         do {
             try handler.perform([request])
         } catch {
-            return .failure(.noFace)
+            return []
         }
         let size = CGSize(width: image.width, height: image.height)
-        let faces = (request.results ?? []).map { candidate(from: $0, imageSize: size) }
-        return EyeDetectionPolicy.evaluate(faces, imageSize: size, revision: revision)
+        return (request.results ?? []).map { candidate(from: $0, imageSize: size) }
     }
 
     /// The image scaled to `DrawnEyes.workingSize` on its longer side, as luminance and opacity.

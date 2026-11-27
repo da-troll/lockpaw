@@ -24,8 +24,11 @@ final class CustomMascot: ObservableObject {
     private static let fileName = "CustomMascot.png"
     /// Where the eyes are (or why there are none), found once at install. See `MascotEyes`.
     private static let eyesFileName = "CustomMascotEyes.json"
+    /// The eyes' cut-out layers, built once at install. See `EyeRig`.
+    private static let rigFileName = "CustomMascotRig.png"
 
     typealias EyeFinding = (CGImage) -> Result<MascotEyes, EyeRejection>
+    typealias RigBuilding = (CGImage, MascotEyes) -> Result<EyeRig.Layers, EyeRejection>
 
     let directory: URL
 
@@ -35,25 +38,44 @@ final class CustomMascot: ObservableObject {
     /// re-evaluates its body on every breath frame.
     @Published private(set) var hasImage: Bool
 
-    /// The custom image's eyes, when it has one clear, straight-on pair. Nil otherwise,
-    /// with `eyeRejection` saying why (nil there too means not looked at yet).
+    /// The custom image's eyes, when it has one clear, straight-on pair whose pupils could
+    /// be cut out to move. Nil otherwise, with `eyeRejection` saying why (nil there too
+    /// means not looked at yet).
     @Published private(set) var eyes: MascotEyes? = nil
     @Published private(set) var eyeRejection: EyeRejection? = nil
+    /// The layers that move those eyes. Set exactly when `eyes` is.
+    @Published private(set) var rig: MascotRig? = nil
 
     private var cached: NSImage?
     private let findEyes: EyeFinding
+    private let buildRig: RigBuilding
     private let eyesRevision: Int
 
-    init(directory: URL, findEyes: @escaping EyeFinding = EyeFinder.find, eyesRevision: Int = EyeFinder.revision) {
+    init(
+        directory: URL,
+        findEyes: @escaping EyeFinding = EyeFinder.find,
+        buildRig: @escaping RigBuilding = EyeRigImages.build,
+        eyesRevision: Int = EyeFinder.revision
+    ) {
         self.directory = directory
         self.findEyes = findEyes
+        self.buildRig = buildRig
         self.eyesRevision = eyesRevision
         self.hasImage = FileManager.default.fileExists(
             atPath: directory.appendingPathComponent(Self.fileName).path
         )
         if hasImage, let record = loadEyesRecord(), record.revision == eyesRevision {
-            eyes = record.eyes
-            eyeRejection = record.rejection
+            if let found = record.eyes {
+                // Eyes without their layers (file lost, or unreadable) count as not looked
+                // at yet, so `refreshEyesIfNeeded` builds them again.
+                if let info = record.rig, let data = try? Data(contentsOf: rigURL),
+                   let loaded = EyeRigImages.rig(fromAtlas: data, info: info) {
+                    eyes = found
+                    rig = loaded
+                }
+            } else {
+                eyeRejection = record.rejection
+            }
         }
     }
 
@@ -61,6 +83,8 @@ final class CustomMascot: ObservableObject {
     var imageURL: URL { directory.appendingPathComponent(Self.fileName) }
 
     var eyesURL: URL { directory.appendingPathComponent(Self.eyesFileName) }
+
+    var rigURL: URL { directory.appendingPathComponent(Self.rigFileName) }
 
     /// Whether `mascot` will draw anything. Call sites gate their surrounding glows
     /// and shadows on this so an absent mascot leaves no orphaned lighting.
@@ -100,19 +124,38 @@ final class CustomMascot: ObservableObject {
         detectEyes(in: png)
     }
 
-    /// A failure to find eyes never fails the install: the image still works as a mascot,
-    /// it just can't look around.
+    /// A failure to find eyes, or to cut their pupils out, never fails the install: the
+    /// image still works as a mascot, it just can't look around.
     private func detectEyes(in png: Data) {
-        let result: Result<MascotEyes, EyeRejection>
+        var result: Result<MascotEyes, EyeRejection> = .failure(.noFace)
+        var built: (rig: MascotRig, atlas: Data)?
         if let source = CGImageSourceCreateWithData(png as CFData, nil),
            let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
             result = findEyes(image)
-        } else {
-            result = .failure(.noFace)
+            if case .success(let found) = result {
+                switch buildRig(image, found) {
+                case .success(let layers):
+                    if let atlas = EyeRigImages.atlasPNG(for: layers),
+                       let loaded = EyeRigImages.rig(fromAtlas: atlas, info: layers.info) {
+                        built = (loaded, atlas)
+                    } else {
+                        result = .failure(.cannotSeparate)
+                    }
+                case .failure(let reason):
+                    result = .failure(reason)
+                }
+            }
         }
-        let record = MascotEyesRecord(revision: eyesRevision, result: result)
+
+        let record = MascotEyesRecord(revision: eyesRevision, result: result, rig: built?.rig.info)
         eyes = record.eyes
         eyeRejection = record.rejection
+        rig = built?.rig
+        if let atlas = built?.atlas {
+            try? atlas.write(to: rigURL, options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(at: rigURL)
+        }
         if let data = try? JSONEncoder().encode(record) {
             try? data.write(to: eyesURL, options: .atomic)
         }
@@ -126,10 +169,12 @@ final class CustomMascot: ObservableObject {
     func remove() {
         try? FileManager.default.removeItem(at: imageURL)
         try? FileManager.default.removeItem(at: eyesURL)
+        try? FileManager.default.removeItem(at: rigURL)
         cached = nil
         hasImage = false
         eyes = nil
         eyeRejection = nil
+        rig = nil
         revision += 1
     }
 
