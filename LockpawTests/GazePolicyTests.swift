@@ -41,6 +41,16 @@ final class GazeTrackerTests: XCTestCase {
 
     // MARK: - Smoothing
 
+    private let frame: TimeInterval = 0.1
+
+    /// Feeds the same people for `frames` frames starting at frame `start`; returns the last gaze.
+    @discardableResult
+    private func feed(_ tracker: inout GazeTracker, _ people: [CGRect], frames: Int, from start: Int) -> CGPoint {
+        var gaze = tracker.gaze
+        for i in start..<(start + frames) { gaze = tracker.update(people: people, at: t0 + Double(i) * frame) }
+        return gaze
+    }
+
     func testFirstFrameDoesNotJump() {
         var tracker = GazeTracker()
         XCTAssertEqual(tracker.update(people: [person(x: 0.1)], at: t0), .zero)
@@ -48,12 +58,10 @@ final class GazeTrackerTests: XCTestCase {
 
     func testEasesTowardThePerson() {
         var tracker = GazeTracker()
-        tracker.update(people: [person(x: 0.1)], at: t0)
-        let step = tracker.update(people: [person(x: 0.1)], at: t0 + 0.1)
+        let step = feed(&tracker, [person(x: 0.1)], frames: GazeTracker.framesToConfirm, from: 0)
         XCTAssertGreaterThan(step.x, 0)
         XCTAssertLessThan(step.x, 0.8)
-        var gaze = step
-        for i in 2...30 { gaze = tracker.update(people: [person(x: 0.1)], at: t0 + Double(i) * 0.1) }
+        let gaze = feed(&tracker, [person(x: 0.1)], frames: 30, from: GazeTracker.framesToConfirm)
         XCTAssertEqual(gaze.x, 0.8, accuracy: 0.01)
     }
 
@@ -74,8 +82,9 @@ final class GazeTrackerTests: XCTestCase {
 
     func testALongPauseCannotOvershoot() {
         var tracker = GazeTracker()
-        tracker.update(people: [person(x: 0.1)], at: t0)
+        feed(&tracker, [person(x: 0.1)], frames: GazeTracker.framesToConfirm, from: 0)
         let gaze = tracker.update(people: [person(x: 0.1)], at: t0 + 3600)
+        XCTAssertGreaterThan(gaze.x, 0)
         XCTAssertLessThanOrEqual(gaze.x, 0.8)
     }
 
@@ -84,6 +93,192 @@ final class GazeTrackerTests: XCTestCase {
         for i in 0...10 { tracker.update(people: [person(x: 0.1)], at: t0 + Double(i) * 0.1) }
         tracker.reset()
         XCTAssertEqual(tracker.gaze, .zero)
+    }
+
+    // MARK: - Confirmation
+
+    func testAPersonMustBeSeenThreeFramesInARow() {
+        XCTAssertEqual(GazeTracker.framesToConfirm, 3)
+        var tracker = GazeTracker()
+        XCTAssertEqual(feed(&tracker, [person(x: 0.1)], frames: 2, from: 0), .zero, "two frames is not enough")
+        XCTAssertGreaterThan(feed(&tracker, [person(x: 0.1)], frames: 1, from: 2).x, 0, "the third frame starts the follow")
+    }
+
+    func testAGapRestartsTheCount() {
+        var tracker = GazeTracker()
+        feed(&tracker, [person(x: 0.1)], frames: 2, from: 0)
+        feed(&tracker, [], frames: 1, from: 2)
+        XCTAssertEqual(feed(&tracker, [person(x: 0.1)], frames: 2, from: 3), .zero, "seen 2, gap, seen 2: never three in a row")
+        XCTAssertGreaterThan(feed(&tracker, [person(x: 0.1)], frames: 1, from: 5).x, 0)
+    }
+
+    func testFlickeringDetectionsNeverMoveTheEyes() {
+        var tracker = GazeTracker()
+        for i in 0..<60 {
+            let people = i % 3 == 2 ? [] : [person(x: 0.1)]
+            XCTAssertEqual(tracker.update(people: people, at: t0 + Double(i) * frame), .zero)
+        }
+    }
+
+    func testADroppedFrameWhileFollowingNeedsNoNewCount() {
+        var tracker = GazeTracker()
+        feed(&tracker, [person(x: 0.1)], frames: 40, from: 0)
+        feed(&tracker, [], frames: 1, from: 40)
+        // They moved during the dropped frame; the very next sighting is followed.
+        let before = tracker.gaze
+        let after = feed(&tracker, [person(x: 0.3)], frames: 1, from: 41)
+        XCTAssertLessThan(after.x, before.x)
+    }
+
+    func testAfterTheyLeaveTheNextPersonIsCountedAfresh() {
+        var tracker = GazeTracker()
+        feed(&tracker, [person(x: 0.5)], frames: 10, from: 0)
+        feed(&tracker, [], frames: 100, from: 10) // well past the hold; eyes are home
+        let home = tracker.gaze
+        XCTAssertEqual(home.x, 0, accuracy: 0.001)
+        XCTAssertEqual(feed(&tracker, [person(x: 0.1)], frames: 2, from: 110).x, home.x, accuracy: 0.001)
+        XCTAssertGreaterThan(feed(&tracker, [person(x: 0.1)], frames: 1, from: 112).x, 0.01)
+    }
+
+    // MARK: - Staying with one person
+
+    func testPickStaysWithWhoeverIsClosestToTheTarget() {
+        let a = person(x: 0.2)
+        let b = person(x: 0.8, width: 0.24) // 1.2× the area: bigger, not big enough
+        XCTAssertEqual(GazeTracker.pick(from: [a, b], following: nil), b, "nobody followed yet: the largest")
+        XCTAssertEqual(GazeTracker.pick(from: [a, b], following: GazeTracker.head(of: a)), a)
+        XCTAssertEqual(GazeTracker.pick(from: [b, a], following: GazeTracker.head(of: a)), a, "order doesn't matter")
+    }
+
+    func testPickSwitchesOnlyToAMuchBiggerBox() {
+        XCTAssertEqual(GazeTracker.switchAreaRatio, 1.5)
+        let a = person(x: 0.2)
+        let following = GazeTracker.head(of: a)
+        let justUnder = person(x: 0.8, width: 0.29) // 1.45×
+        let over = person(x: 0.8, width: 0.31)      // 1.55×
+        XCTAssertEqual(GazeTracker.pick(from: [a, justUnder], following: following), a)
+        XCTAssertEqual(GazeTracker.pick(from: [a, over], following: following), over)
+        XCTAssertNil(GazeTracker.pick(from: [.zero], following: following))
+    }
+
+    func testEyesStayWithThePersonTheyFollow() {
+        var tracker = GazeTracker()
+        let a = person(x: 0.2)
+        feed(&tracker, [a], frames: 40, from: 0)
+        XCTAssertEqual(tracker.gaze.x, 0.6, accuracy: 0.01)
+
+        // Someone a little bigger walks in on the other side: the eyes don't leave.
+        let passerBy = person(x: 0.8, width: 0.24)
+        for i in 40..<80 {
+            let gaze = tracker.update(people: [a, passerBy], at: t0 + Double(i) * frame)
+            XCTAssertEqual(gaze.x, 0.6, accuracy: 0.01)
+        }
+
+        // Someone steps right up to the screen: now they take over.
+        let upClose = person(x: 0.8, width: 0.4)
+        let gaze = feed(&tracker, [a, upClose], frames: 40, from: 80)
+        XCTAssertEqual(gaze.x, -0.6, accuracy: 0.01)
+
+        // And the eyes stay with them, though the first person is still there.
+        XCTAssertEqual(feed(&tracker, [a, upClose], frames: 10, from: 120).x, -0.6, accuracy: 0.01)
+    }
+
+    func testTwoSimilarPeopleCrossingDoNotSwapTheGaze() {
+        // Same size, their order in Vision's list flipping every frame: the old "largest wins"
+        // had nothing to choose by. The eyes stay on the one they started with.
+        var tracker = GazeTracker()
+        let a = person(x: 0.3)
+        let b = person(x: 0.7)
+        feed(&tracker, [a], frames: 40, from: 0)
+        for i in 40..<100 {
+            let gaze = tracker.update(people: i % 2 == 0 ? [a, b] : [b, a], at: t0 + Double(i) * frame)
+            XCTAssertEqual(gaze.x, 0.4, accuracy: 0.01)
+        }
+    }
+
+    // MARK: - Speed
+
+    private func speed(from a: CGPoint, to b: CGPoint, over dt: TimeInterval) -> CGFloat {
+        ((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).squareRoot() / CGFloat(dt)
+    }
+
+    func testGazeNeverMovesFasterThanTheCap() {
+        XCTAssertEqual(GazeTracker.maxSpeed, 2.5)
+        var tracker = GazeTracker()
+        // Far corner to far corner: uncapped, the first step alone would cover ~0.66 in 0.1s.
+        feed(&tracker, [person(x: 0.0, top: 1.0)], frames: 40, from: 0)
+        XCTAssertEqual(tracker.gaze.x, 1, accuracy: 0.01)
+        var previous = tracker.gaze
+        var fastest: CGFloat = 0
+        for i in 40..<80 {
+            let gaze = tracker.update(people: [person(x: 1.0, top: 0.3, height: 0.3)], at: t0 + Double(i) * frame)
+            fastest = max(fastest, speed(from: previous, to: gaze, over: frame))
+            previous = gaze
+        }
+        XCTAssertLessThanOrEqual(fastest, GazeTracker.maxSpeed + 0.0001)
+        XCTAssertEqual(fastest, GazeTracker.maxSpeed, accuracy: 0.0001, "this jump is big enough to hit the cap")
+        XCTAssertEqual(previous.x, -1, accuracy: 0.01, "capped, not stopped")
+    }
+
+    func testTheCapHoldsAcrossUnevenFramesAndOnTheWayHome() {
+        var tracker = GazeTracker()
+        var now = t0
+        var previous = tracker.gaze
+        let gaps: [TimeInterval] = [0.016, 0.05, 0.2, 0.033, 0.4, 0.1]
+        for i in 0..<120 {
+            let dt = gaps[i % gaps.count]
+            now += dt
+            let people: [CGRect]
+            switch i {
+            case ..<40: people = [person(x: 0.0, top: 1.0)]
+            case ..<80: people = [person(x: 1.0, top: 0.3, height: 0.3)]
+            default: people = []
+            }
+            let gaze = tracker.update(people: people, at: now)
+            XCTAssertLessThanOrEqual(speed(from: previous, to: gaze, over: dt), GazeTracker.maxSpeed + 0.0001, "frame \(i)")
+            previous = gaze
+        }
+    }
+
+    // MARK: - Walking in
+
+    func testPersonWalkingInFromTheEdgeWithDroppedFrames() {
+        // 15 fps. Someone walks in from the camera's left edge (the viewer's right) and stops
+        // past the middle. Vision clips their box to the frame while they enter, and loses
+        // them every fifth frame.
+        let dt: TimeInterval = 1.0 / 15
+        let width: CGFloat = 0.3
+        let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
+        var tracker = GazeTracker()
+        var previous = tracker.gaze
+        var directions: [CGFloat] = [] // sign of each real x move
+        var yDirections: [CGFloat] = []
+        var furthestRight: CGFloat = 0
+
+        for i in 0..<150 {
+            let centerX = min(-0.2 + 0.25 * CGFloat(Double(i) * dt), 0.7) // enters, walks 3.6s, stands
+            let box = person(x: centerX, width: width).intersection(unit)
+            let dropped = i % 5 == 4
+            let people = dropped || box.isNull || box.width <= 0 ? [] : [box]
+            let gaze = tracker.update(people: people, at: t0 + Double(i) * dt)
+
+            XCTAssertLessThanOrEqual(speed(from: previous, to: gaze, over: dt), GazeTracker.maxSpeed + 0.0001, "frame \(i)")
+            let dx = gaze.x - previous.x
+            if abs(dx) > 1e-9 { directions.append(dx > 0 ? 1 : -1) }
+            let dy = gaze.y - previous.y
+            if abs(dy) > 1e-9 { yDirections.append(dy > 0 ? 1 : -1) }
+            furthestRight = max(furthestRight, gaze.x)
+            previous = gaze
+        }
+
+        func changes(_ signs: [CGFloat]) -> Int { zip(signs, signs.dropFirst()).filter { $0 != $1 }.count }
+        // Out toward the edge they came in from, then back across with them. Nothing else:
+        // a dropped frame must not send the eyes home and back.
+        XCTAssertLessThanOrEqual(changes(directions), 1)
+        XCTAssertEqual(changes(yDirections), 0)
+        XCTAssertEqual(directions.first, 1, "first toward the edge they entered from")
+        XCTAssertGreaterThan(furthestRight, 0.3, "the eyes really went out to meet them")
+        XCTAssertEqual(previous.x, -0.4, accuracy: 0.01, "and ended on where they stand")
     }
 }
 
