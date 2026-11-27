@@ -14,7 +14,8 @@ import Foundation
 enum DrawnEyes {
     /// Bumped when the rules below change (or when a drawing gets tried: 3 is the hand-off
     /// from the photo pass ignoring stray tiny faces), so stored results are re-checked.
-    static let version = 3
+    /// 4: a pupil inside an eyeball counts for more than any other matching pair of spots.
+    static let version = 4
 
     /// Images are scanned at this size; plenty for eyes, trivial to scan.
     static let workingSize = 256
@@ -36,6 +37,17 @@ enum DrawnEyes {
     /// Eye spacing in eye widths, centre to centre: closer is one smudged feature, further
     /// is two things at the sides of the head (ears, buttons) rather than on the face.
     static let spacing: ClosedRange<CGFloat> = 1.5...6.5
+    /// The same, for spots that each sit inside an eyeball, measured in eyeball widths:
+    /// big round eyes nearly touch (goggles), and the pupils in them are small and far apart.
+    static let nestedSpacing: ClosedRange<CGFloat> = 1.02...6.5
+    /// What a spot's eyeball is: a spot of the other tone around it, at least this many
+    /// times its area and at most this many times its width (more is the face, not an eye).
+    static let eyeballArea: CGFloat = 1.5
+    static let eyeballWidth: CGFloat = 8
+    /// Added to a pair's score when both spots sit in an eyeball. Nostrils, cheek
+    /// highlights and the folds of a paper fox are matching pairs of spots too; a dark
+    /// spot inside a light one is what only eyes are.
+    static let nestedBonus: CGFloat = 1
     /// A runner-up pair scoring within this share of the best, elsewhere in the image,
     /// makes the answer ambiguous.
     static let ambiguity: CGFloat = 0.9
@@ -170,10 +182,25 @@ enum DrawnEyes {
             return eyeArea.contains(relativeArea) && eyeAspect.contains(aspect) && spot.fill >= minFill
         }
 
+        // The eyeball around a spot, if it has one: the smallest spot of the other tone
+        // whose box holds it. Looked for among all spots, not just eye-like ones: an
+        // eyeball with a pupil-shaped hole in it is a ring, and rings aren't eye-like.
+        func eyeball(of spot: Spot) -> Spot? {
+            // Dark in light only. A light spot inside a dark one is the glint on a pupil.
+            guard spot.isDark else { return nil }
+            return spots.filter { other in
+                other.isDark != spot.isDark
+                    && other.bounds.insetBy(dx: -1, dy: -1).contains(spot.bounds)
+                    && CGFloat(other.area) >= CGFloat(spot.area) * eyeballArea
+                    && other.bounds.width <= spot.bounds.width * eyeballWidth
+            }.min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }
+        }
+        let eyeballs = eyeLike.map(eyeball(of:))
+
         var pairs: [Pair] = []
         var sawSmallPair = false
         for (i, a) in eyeLike.enumerated() {
-            for b in eyeLike[(i + 1)...] where a.isDark == b.isDark {
+            for (j, b) in eyeLike.enumerated() where j > i && a.isDark == b.isDark {
                 let (left, right) = a.centroid.x <= b.centroid.x ? (a, b) : (b, a)
                 let dx = right.centroid.x - left.centroid.x
                 let dy = right.centroid.y - left.centroid.y
@@ -181,10 +208,17 @@ enum DrawnEyes {
                 let averageWidth = (left.bounds.width + right.bounds.width) / 2
                 let sizeRatio = CGFloat(max(left.area, right.area)) / CGFloat(max(1, min(left.area, right.area)))
 
+                var nested = false
+                var spaced = spacing.contains(distance / max(1, averageWidth))
+                if let ballA = eyeballs[i], let ballB = eyeballs[j], ballA != ballB {
+                    nested = true
+                    let ballWidth = (ballA.bounds.width + ballB.bounds.width) / 2
+                    spaced = spaced || nestedSpacing.contains(distance / max(1, ballWidth))
+                }
                 guard distance > 0,
                       sizeRatio <= maxSizeRatio,
                       abs(dy) <= distance * EyeDetectionPolicy.maxTilt,
-                      spacing.contains(distance / max(1, averageWidth))
+                      spaced
                 else { continue }
                 guard distance >= min(imageSize.width, imageSize.height) * EyeDetectionPolicy.minPupilDistance else {
                     sawSmallPair = true
@@ -196,6 +230,7 @@ enum DrawnEyes {
                 let score = (1 / sizeRatio)
                     + (1 - abs(dy) / (distance * EyeDetectionPolicy.maxTilt))
                     + (left.isDark ? 0.05 : 0)
+                    + (nested ? nestedBonus : 0)
                 pairs.append(Pair(left: left, right: right, score: score, spacing: distance))
             }
         }

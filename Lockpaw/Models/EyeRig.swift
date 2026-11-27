@@ -6,6 +6,10 @@ import Foundation
 /// leaves is painted in from the eye around it, and the pupil is only ever drawn inside
 /// the eye. Lids, rims and sockets stay the original pixels, so there is no cut edge to see.
 ///
+/// Where the pupil sits in an iris that is a whole round disc inside an eye, iris and
+/// pupil are cut out together and move as one piece, as they do in a real eye. Otherwise
+/// (an iris half under a lid, an iris that fills the eye) the pupil moves inside the iris.
+///
 /// The first version slid a soft-edged patch of the whole eye, rim and all; the shifted rim
 /// showed through as a doubled outline on every image tried.
 ///
@@ -14,7 +18,7 @@ import Foundation
 /// rejected, and that image simply has no moving eyes.
 enum EyeRig {
     /// Bumped when the rules below change, so a stored rig is rebuilt.
-    static let version = 1
+    static let version = 2
 
     /// Each eye is worked on in a window this many eye-spacings wide, centred on the pupil:
     /// just under half, so the two windows never overlap.
@@ -32,6 +36,34 @@ enum EyeRig {
     static let maxHoleGrow: CGFloat = 0.35
     /// "Stops changing": successive one-pixel rings differ by less than this (0...255).
     static let holeSettled: Float = 1.2
+    /// On an eye that is shaded all the way across, rings never stop changing by that
+    /// measure. Then: by less than this share of the contrast between the part and the eye.
+    static let holeSettledShare: Float = 0.03
+
+    /// An iris, as opposed to the eye itself: what surrounds the pupil, with something
+    /// lighter (for a dark pupil) beyond it.
+    static let irisContrast: Float = 18
+    /// An iris that can be moved with its pupil as one piece is a whole, round disc, this
+    /// many times the pupil's size. One half hidden under a lid, or half in shadow, would
+    /// be cut along a line that shows as soon as it moves: those keep the pupil moving alone.
+    static let irisSize: ClosedRange<CGFloat> = 1.25...3.6
+    static let irisFill: CGFloat = 0.7
+    static let irisAspect: ClosedRange<CGFloat> = 0.78...1.28
+    /// A pupil is first looked for as a round blob (a disc fills 0.79 of its box), and only
+    /// failing that as any compact one.
+    static let roundPupilFill: CGFloat = 0.7
+    static let roundPupilAspect: ClosedRange<CGFloat> = 0.75...1.34
+    /// How much of the moving piece may slide out of sight behind the edge of the eye, as
+    /// a share of its size. Mascots are often drawn cross-eyed or glancing aside, with no
+    /// room at all on one side: a real eye turning that way goes under the lid.
+    static let slip: CGFloat = 0.2
+    /// The two cut-outs have to be about the same size. When one is this much bigger than
+    /// the other, one of them took a piece of its iris or a shadow with it, and it shows.
+    static let maxPartMismatch: CGFloat = 1.18
+    /// Eyes and irises are convex, so a dent in what was found is the eye's own shading or a
+    /// glint, not its shape. Inside the convex outline of what was found, colours this many
+    /// times further from the eye's own still count as the eye.
+    static let dentTolerance: Float = 1.8
     /// The pupil keeps this share of its radius clear of the edge of the eye at full travel.
     static let rimMargin: CGFloat = 0.1
     /// Travel is never more than this share of the pupil's width and height, however much
@@ -65,7 +97,8 @@ enum EyeRig {
     }
 
     /// How far the pupils may move from where they were drawn, each way, as a share of the
-    /// image's width (left, right) or height (up, down). The same for both eyes.
+    /// image's width (left, right) or height (up, down). The same for both eyes: eyes that
+    /// move by different amounts look wall-eyed.
     struct Travel: Codable, Equatable {
         var left: CGFloat
         var right: CGFloat
@@ -85,7 +118,8 @@ enum EyeRig {
     struct Layers: Equatable {
         /// Opaque only where a pupil was: the eye painted in underneath it.
         var plate: Bitmap
-        /// The two pupils, cut out, on transparent ground. This is the layer that moves.
+        /// The two pupils (with their irises, when the eye has them), cut out, on transparent
+        /// ground. This is the layer that moves.
         var pupils: Bitmap
         /// Opaque where a pupil may be drawn: the eyes themselves. This one stays put.
         var clip: Bitmap
@@ -117,24 +151,58 @@ enum EyeRig {
         let spacing = hypot(centers[1].x - centers[0].x, centers[1].y - centers[0].y)
         guard spacing >= 8 else { return .failure(.cannotSeparate) }
 
-        var parts: [EyeParts] = []
+        var levels: [EyeLevels] = []
         for (eye, center) in zip([eyes.left, eyes.right], centers) {
             let hint = CGSize(width: eye.size.width * CGFloat(w), height: eye.size.height * CGFloat(h))
-            switch separate(image, center: center, spacing: spacing, hint: hint) {
-            case .success(let found): parts.append(found)
-            case .failure(let reason): return .failure(reason)
-            }
+            levels.append(separate(image, center: center, spacing: spacing, hint: hint))
         }
 
-        // Both eyes move together, so each direction gets what the tighter eye allows.
-        let px = Travel(
-            left: parts.map(\.travel.left).min() ?? 0,
-            right: parts.map(\.travel.right).min() ?? 0,
-            up: parts.map(\.travel.up).min() ?? 0,
-            down: parts.map(\.travel.down).min() ?? 0
-        )
-        let pupilWidth = parts.map { CGFloat($0.pupilBounds.width) }.min() ?? 0
-        guard px.left + px.right >= max(2, pupilWidth * minTravel) else { return .failure(.noRoomToMove) }
+        // Both eyes move by the same amount. Each way that is the room the roomier eye has,
+        // but no more than the tighter eye's room plus what may slip behind its edge.
+        func shared(_ parts: [EyeParts]) -> Travel {
+            func one(_ room: (Travel) -> CGFloat, _ size: (EyeParts) -> Int) -> CGFloat {
+                let most = parts.map { room($0.travel) }.max() ?? 0
+                let withSlip = parts.map { room($0.travel) + ($0.slips ? CGFloat(size($0)) * slip : 0) }.min() ?? 0
+                return min(most, withSlip).rounded(.down)
+            }
+            return Travel(
+                left: one(\.left) { $0.partBounds.width }, right: one(\.right) { $0.partBounds.width },
+                up: one(\.up) { $0.partBounds.height }, down: one(\.down) { $0.partBounds.height }
+            )
+        }
+        func canMove(_ parts: [EyeParts], _ travel: Travel) -> Bool {
+            let width = parts.map { CGFloat($0.partBounds.width) }.min() ?? 0
+            return travel.left + travel.right >= max(2, width * minTravel)
+        }
+        func matched(_ parts: [EyeParts]) -> Bool {
+            func ratio(_ a: Int, _ b: Int) -> CGFloat { CGFloat(max(a, b)) / CGFloat(max(1, min(a, b))) }
+            guard parts.count == 2 else { return false }
+            return ratio(parts[0].partBounds.width, parts[1].partBounds.width) <= maxPartMismatch
+                && ratio(parts[0].partBounds.height, parts[1].partBounds.height) <= maxPartMismatch
+        }
+
+        // Both eyes the same way: iris and pupil together when both eyes have an iris that
+        // can move inside its eye, otherwise the pupils alone.
+        let irises = levels.compactMap { level -> EyeParts? in
+            guard case .success(let part)? = level.iris else { return nil }
+            return part
+        }
+        var parts: [EyeParts] = []
+        var px = Travel(left: 0, right: 0, up: 0, down: 0)
+        if irises.count == 2, matched(irises), canMove(irises, shared(irises)) {
+            parts = irises
+            px = shared(irises)
+        } else {
+            for level in levels {
+                switch level.pupil {
+                case .success(let part): parts.append(part)
+                case .failure(let reason): return .failure(reason)
+                }
+            }
+            guard matched(parts) else { return .failure(.cannotSeparate) }
+            px = shared(parts)
+            guard canMove(parts, px) else { return .failure(.noRoomToMove) }
+        }
 
         // One rect around everything that is drawn.
         var x0 = w, y0 = h, x1 = 0, y1 = 0
@@ -224,19 +292,47 @@ enum EyeRig {
         var spriteAlpha: [Float]
         /// Window-local bounds of everything drawn (`max` exclusive).
         var used: (minX: Int, minY: Int, maxX: Int, maxY: Int)
-        var pupilBounds: (width: Int, height: Int)
-        /// Pixels.
+        /// Size of the part that moves: the pupil, or the iris with it.
+        var partBounds: (width: Int, height: Int)
+        /// Pixels of room each way, staying wholly inside the eye.
         var travel: Travel
+        /// Whether the piece may slide partly behind the edge of what it moves in. True in
+        /// an eye (the edge is a rim or a lid); false for a pupil in its iris, where being
+        /// cut off by the iris's edge would look like nothing real.
+        var slips: Bool
     }
 
-    private static func separate(_ image: Bitmap, center: CGPoint, spacing: CGFloat, hint: CGSize) -> Result<EyeParts, EyeRejection> {
+    /// One eye cut two ways: the pupil alone, and (when the pupil sits in an iris) the iris
+    /// and pupil as one piece.
+    private struct EyeLevels {
+        var pupil: Result<EyeParts, EyeRejection>
+        var iris: Result<EyeParts, EyeRejection>?
+    }
+
+    /// The pixels of the window an eye is looked for in.
+    private struct WideEye {
+        var window: Window
+        var rgb: [Float]
+        var opaque: [Bool]
+        var luma: [Float]
+    }
+
+    private struct Layer {
+        var parts: Result<EyeParts, EyeRejection>
+        /// Set when what surrounds the part is an iris: that iris and the part, as a mask
+        /// over the wide window, and the tone that divides it from the eye beyond.
+        var around: (part: [Bool], cut: Float)?
+    }
+
+    private static func separate(_ image: Bitmap, center: CGPoint, spacing: CGFloat, hint: CGSize) -> EyeLevels {
+        let unreadable = EyeLevels(pupil: .failure(.cannotSeparate), iris: nil)
         let half = max(6, Int((spacing * windowShare).rounded()))
         let cx = Int(center.x.rounded()), cy = Int(center.y.rounded())
         let wx0 = max(0, cx - half), wy0 = max(0, cy - half)
         let wx1 = min(image.width, cx + half + 1), wy1 = min(image.height, cy + half + 1)
         let wide = Window(x: wx0, y: wy0, w: wx1 - wx0, h: wy1 - wy0)
         let lx = cx - wx0, ly = cy - wy0
-        guard wide.w > 8, wide.h > 8, lx >= 0, ly >= 0, lx < wide.w, ly < wide.h else { return .failure(.cannotSeparate) }
+        guard wide.w > 8, wide.h > 8, lx >= 0, ly >= 0, lx < wide.w, ly < wide.h else { return unreadable }
         let wideCount = wide.w * wide.h
 
         // The window's pixels as floats.
@@ -253,7 +349,7 @@ enum EyeRig {
                 wideLuma[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b
             }
         }
-        guard wideOpaque[ly * wide.w + lx] else { return .failure(.cannotSeparate) }
+        guard wideOpaque[ly * wide.w + lx] else { return unreadable }
 
         // 1. The pupil: split the area the detector marked into its two tones, and take the
         //    connected patch of the centre's tone.
@@ -264,7 +360,7 @@ enum EyeRig {
                 histogram[Int(min(255, max(0, wideLuma[y * wide.w + x])))] += 1
             }
         }
-        guard let threshold = otsu(histogram) else { return .failure(.cannotSeparate) }
+        guard let threshold = otsu(histogram) else { return unreadable }
 
         var seedSum: Float = 0, seedCount: Float = 0
         let sr = max(1, min(hx, hy) / 6)
@@ -280,17 +376,20 @@ enum EyeRig {
         // running through an iris) pupil-toned pixels can lead all the way out of the eye.
         // So when the patch isn't a compact blob, ask for a tone closer to the pupil's own.
         var found: (pupil: [Bool], seed: Int, bounds: (minX: Int, minY: Int, maxX: Int, maxY: Int), cut: Float)?
+        // Round blobs first, at any of the tones: a pupil merged with the dark side of its
+        // iris is compact too, and would be cut out with half the iris attached.
+        search: for mustBeRound in [true, false] {
         for share in pupilToneSteps {
             let cut = seedTone + (threshold - seedTone) * share
             func isTone(_ i: Int) -> Bool { wideOpaque[i] && ((wideLuma[i] < cut) == pupilIsDark) }
 
             // The exact centre may sit on a highlight; start from the nearest pupil-toned pixel.
             var seed: Int?
-            search: for reach in 0...max(1, sr * 2) {
+            nearest: for reach in 0...max(1, sr * 2) {
                 for y in max(0, ly - reach)...min(wide.h - 1, ly + reach) {
                     for x in max(0, lx - reach)...min(wide.w - 1, lx + reach) where isTone(y * wide.w + x) {
                         seed = y * wide.w + x
-                        break search
+                        break nearest
                     }
                 }
             }
@@ -305,13 +404,41 @@ enum EyeRig {
                   CGFloat(area) / CGFloat(cw * ch) >= minPupilFill,
                   cw >= 4, ch >= 4, cw <= ch * 3, ch <= cw * 3
             else { continue }
+            if mustBeRound {
+                guard CGFloat(area) / CGFloat(cw * ch) >= roundPupilFill,
+                      roundPupilAspect.contains(CGFloat(cw) / CGFloat(ch))
+                else { continue }
+            }
             found = (candidate, seed, cb, cut)
-            break
+            break search
         }
-        guard let found else { return .failure(.cannotSeparate) }
-        // The rest only concerns the pupil and as far as it could ever travel, so carry on
-        // in a window just that big: a quarter of the pixels, and nothing lost.
-        let wideBounds = found.bounds
+        }
+        guard let found else { return unreadable }
+
+        let source = WideEye(window: wide, rgb: wideRGB, opaque: wideOpaque, luma: wideLuma)
+        let pupilLevel = layer(source, part: found.pupil, seed: found.seed, cut: found.cut, outlineCut: found.cut, partIsDark: pupilIsDark)
+        var irisLevel: Result<EyeParts, EyeRejection>?
+        if let iris = pupilLevel.around {
+            irisLevel = layer(source, part: iris.part, seed: found.seed, cut: iris.cut, outlineCut: found.cut, partIsDark: pupilIsDark).parts
+        }
+        return EyeLevels(pupil: pupilLevel.parts, iris: irisLevel)
+    }
+
+    /// Cuts `part` (the pupil, or an iris with its pupil) out of the eye around it: the hole
+    /// it leaves, the eye it may move in, how far, the paint for the hole and the cut-out
+    /// itself. `cut` is the tone that divides the part from the eye; `outlineCut` the tone of
+    /// the pupil itself, which is how dark an outline, a lid or a lash is. (For an iris the
+    /// two differ: the shadow under the eye's upper rim is darker than the iris's edge and
+    /// still eye, not outline.)
+    private static func layer(
+        _ source: WideEye, part widePart: [Bool], seed wideSeed: Int, cut: Float, outlineCut: Float, partIsDark: Bool
+    ) -> Layer {
+        let wide = source.window
+        guard let wideBounds = bounds(of: widePart, width: wide.w, height: wide.h) else {
+            return Layer(parts: .failure(.cannotSeparate))
+        }
+        // The rest only concerns the part and as far as it could ever travel, so carry on
+        // in a window just that big: a fraction of the pixels, and nothing lost.
         let pw = wideBounds.maxX - wideBounds.minX, ph = wideBounds.maxY - wideBounds.minY
         let radius = CGFloat(min(pw, ph)) / 2
         let capX = max(1, Int((CGFloat(pw) * maxTravel.width).rounded()))
@@ -325,17 +452,20 @@ enum EyeRig {
         var opaque = [Bool](repeating: false, count: count)
         var luma = [Float](repeating: 0, count: count)
         var pupil = [Bool](repeating: false, count: count)
+        var partLuma: Float = 0, partCount: Float = 0
         for y in 0..<win.h {
             for x in 0..<win.w {
                 let from = (ky0 + y) * wide.w + kx0 + x, to = y * win.w + x
-                for channel in 0..<3 { rgb[to * 3 + channel] = wideRGB[from * 3 + channel] }
-                opaque[to] = wideOpaque[from]
-                luma[to] = wideLuma[from]
-                pupil[to] = found.pupil[from]
+                for channel in 0..<3 { rgb[to * 3 + channel] = source.rgb[from * 3 + channel] }
+                opaque[to] = source.opaque[from]
+                luma[to] = source.luma[from]
+                pupil[to] = widePart[from]
+                if widePart[from] { partLuma += source.luma[from]; partCount += 1 }
             }
         }
-        let seed = (found.seed / wide.w - ky0) * win.w + (found.seed % wide.w - kx0)
-        func isPupilTone(_ i: Int) -> Bool { opaque[i] && ((luma[i] < found.cut) == pupilIsDark) }
+        partLuma /= max(1, partCount)
+        let seed = (wideSeed / wide.w - ky0) * win.w + (wideSeed % wide.w - kx0)
+        func isPupilTone(_ i: Int) -> Bool { opaque[i] && ((luma[i] < cut) == partIsDark) }
 
         // 2. The hole to paint over: the pupil and its soft fringe.
         let maxGrow = max(4, Int((radius * maxHoleGrow).rounded()))
@@ -350,18 +480,22 @@ enum EyeRig {
         for k in 0..<ringLuma.count {
             ringLuma[k] = ringCount[k] > 0 ? ringSum[k] / ringCount[k] : (k > 0 ? ringLuma[k - 1] : 0)
         }
-        var grow = maxGrow
-        for k in 2..<maxGrow
-        where abs(ringLuma[k + 1] - ringLuma[k]) < holeSettled && abs(ringLuma[k + 2] - ringLuma[k]) < holeSettled * 2 {
-            grow = k
-            break
+        // Where the rings stop changing. Strictly, if that happens near the part; failing
+        // that (an eye shaded right across never quite stops) by the looser measure.
+        func settles(at k: Int, within limit: Float) -> Bool {
+            abs(ringLuma[k + 1] - ringLuma[k]) < limit && abs(ringLuma[k + 2] - ringLuma[k]) < limit * 2
         }
+        let near = min(maxGrow, max(4, Int((radius * 0.2).rounded())))
+        let loose = max(holeSettled, abs(ringLuma[min(2, maxGrow)] - partLuma) * holeSettledShare)
+        let grow = (2..<near).first { settles(at: $0, within: holeSettled) }
+            ?? (2..<maxGrow).first { settles(at: $0, within: loose) }
+            ?? maxGrow
         let hole = fromPupil.map { $0 <= Float(grow) }
         // If what the hole grew out to is as dark (or light) as the pupil, the pupil sits
         // right against the eye's outline: there is no eye around it to move in, and too
         // little of it to learn its colour from.
-        guard (ringLuma[grow] < found.cut) != pupilIsDark else { return .failure(.noRoomToMove) }
-        guard !touchesEdge(hole, width: win.w, height: win.h) else { return .failure(.cannotSeparate) }
+        guard (ringLuma[grow] < cut) != partIsDark else { return Layer(parts: .failure(.noRoomToMove)) }
+        guard !touchesEdge(hole, width: win.w, height: win.h) else { return Layer(parts: .failure(.cannotSeparate)) }
 
         // 3. The eye around it: everything connected to the pupil's surroundings that is
         //    about their colour. Judged on a lightly blurred copy so texture doesn't fray it.
@@ -374,7 +508,7 @@ enum EyeRig {
         let thinRing = dilated(hole, by: 3, width: win.w, height: win.h)
         var nearest: [Int] = []
         for i in 0..<count where thinRing[i] && !hole[i] && opaque[i] { nearest.append(i) }
-        guard nearest.count >= 12 else { return .failure(.cannotSeparate) }
+        guard nearest.count >= 12 else { return Layer(parts: .failure(.cannotSeparate)) }
         var nearMean = [Float](repeating: 0, count: 3)
         for i in nearest { for c in 0..<3 { nearMean[c] += soft[i * 3 + c] } }
         for c in 0..<3 { nearMean[c] /= Float(nearest.count) }
@@ -389,7 +523,7 @@ enum EyeRig {
         }
         var ring: [Int] = []
         for i in 0..<count where reached[i] { ring.append(i) }
-        guard ring.count >= 12 else { return .failure(.cannotSeparate) }
+        guard ring.count >= 12 else { return Layer(parts: .failure(.cannotSeparate)) }
 
         func tone(of image: [Float]) -> (mean: [Float], spread: Float) {
             var mean = [Float](repeating: 0, count: 3)
@@ -416,10 +550,10 @@ enum EyeRig {
         func isEyeTone(_ i: Int) -> Bool {
             guard opaque[i], distanceSquared(judged, i, mean) <= toleranceSquared else { return false }
             let tone = 0.2126 * judged[i * 3] + 0.7152 * judged[i * 3 + 1] + 0.0722 * judged[i * 3 + 2]
-            return (tone < found.cut) != pupilIsDark
+            return (tone < outlineCut) != partIsDark
         }
         let seeds = ring.filter(isEyeTone)
-        guard seeds.count >= ring.count / 3 else { return .failure(.cannotSeparate) }
+        guard seeds.count >= ring.count / 3 else { return Layer(parts: .failure(.cannotSeparate)) }
 
         var region = flood(from: seeds, width: win.w, height: win.h) { hole[$0] || isEyeTone($0) }
         for i in 0..<count where hole[i] { region[i] = true }
@@ -432,17 +566,65 @@ enum EyeRig {
         region = flood(from: [seed], width: win.w, height: win.h) { region[$0] }
         fillHoles(&region, width: win.w, height: win.h)
 
+        // Smooth the dents out. The edge of this region is where the pupil gets clipped
+        // when it slides to the side, and a ragged edge there shows as a bite out of it.
+        let outline = convexOutline(of: region, width: win.w, height: win.h)
+        let dentSquared = toleranceSquared * dentTolerance * dentTolerance
+        let strict = region
+        region = flood(from: [seed], width: win.w, height: win.h) { i in
+            if strict[i] { return true }
+            guard outline[i], opaque[i], distanceSquared(judged, i, mean) <= dentSquared else { return false }
+            let tone = 0.2126 * judged[i * 3] + 0.7152 * judged[i * 3 + 1] + 0.0722 * judged[i * 3 + 2]
+            return (tone < outlineCut) != partIsDark
+        }
+        fillHoles(&region, width: win.w, height: win.h)
+
+        // Is that "eye" in fact an iris? A compact disc not much bigger than the part, with
+        // something lighter beyond it (for a dark pupil): then the eye proper lies further
+        // out, and iris and pupil belong together as the piece that moves.
+        var around: (part: [Bool], cut: Float)?
+        var insideIris = false
+        if let rb = bounds(of: region, width: win.w, height: win.h), !touchesEdge(region, width: win.w, height: win.h) {
+            let fromRegion = distances(to: region, width: win.w, height: win.h)
+            let reach = 2 + Float(max(4, Int((radius * 0.2).rounded())))
+            var inside: Float = 0, insideCount: Float = 0, beyond: Float = 0, beyondCount: Float = 0
+            for i in 0..<count where opaque[i] {
+                if region[i] && !hole[i] { inside += luma[i]; insideCount += 1 }
+                if fromRegion[i] > 2 && fromRegion[i] <= reach { beyond += luma[i]; beyondCount += 1 }
+            }
+            if insideCount > 0, beyondCount >= 12 {
+                let irisTone = inside / insideCount, eyeTone = beyond / beyondCount
+                insideIris = partIsDark ? eyeTone > irisTone + irisContrast : eyeTone < irisTone - irisContrast
+
+                let rw = rb.maxX - rb.minX, rh = rb.maxY - rb.minY
+                let area = region.reduce(0) { $0 + ($1 ? 1 : 0) }
+                let disc = CGFloat(area) / CGFloat(rw * rh) >= irisFill && irisAspect.contains(CGFloat(rw) / CGFloat(rh))
+                let sized = irisSize.contains(CGFloat(rw) / CGFloat(pw)) && irisSize.contains(CGFloat(rh) / CGFloat(ph))
+                if insideIris && disc && sized {
+                    var mask = [Bool](repeating: false, count: wide.w * wide.h)
+                    for y in 0..<win.h {
+                        for x in 0..<win.w where region[y * win.w + x] { mask[(ky0 + y) * wide.w + kx0 + x] = true }
+                    }
+                    around = (mask, (irisTone + eyeTone) / 2)
+                }
+            }
+        }
+
         // 4. Room to move: how far the pupil, with a margin, can slide each way and stay
         //    wholly inside the eye.
         let margin = max(1, Int((radius * rimMargin).rounded()))
         let body = dilated(pupil, by: margin, width: win.w, height: win.h)
-        // The eye has no holes, so if the pupil's outline fits, all of it does.
+        // Only what is inside the eye to begin with has to stay inside it. A pupil drawn
+        // hard against one corner (cross-eyed, glancing aside) pokes out there with its
+        // margin before it has moved at all, and would otherwise count as having no room
+        // in any direction, the open side included.
+        // The eye has no holes, so if the outline of that fits, all of it does.
+        func inBody(_ x: Int, _ y: Int) -> Bool { body[y * win.w + x] && region[y * win.w + x] }
         var bodyPixels: [(x: Int, y: Int)] = []
         for y in 0..<win.h {
-            for x in 0..<win.w where body[y * win.w + x] {
+            for x in 0..<win.w where inBody(x, y) {
                 let edge = x == 0 || y == 0 || x == win.w - 1 || y == win.h - 1
-                    || !body[y * win.w + x - 1] || !body[y * win.w + x + 1]
-                    || !body[(y - 1) * win.w + x] || !body[(y + 1) * win.w + x]
+                    || !inBody(x - 1, y) || !inBody(x + 1, y) || !inBody(x, y - 1) || !inBody(x, y + 1)
                 if edge { bodyPixels.append((x, y)) }
             }
         }
@@ -475,7 +657,7 @@ enum EyeRig {
             samples = []
             for i in 0..<count where sampleBand[i] && !hole[i] && opaque[i] { samples.append(i) }
         }
-        guard !samples.isEmpty else { return .failure(.cannotSeparate) }
+        guard !samples.isEmpty else { return Layer(parts: .failure(.cannotSeparate)) }
         let stride = max(1, samples.count / 120)
         let chosen = Swift.stride(from: 0, to: samples.count, by: stride).map { samples[$0] }
         let sx = chosen.map { Float($0 % win.w) }, sy = chosen.map { Float($0 / win.w) }
@@ -537,11 +719,11 @@ enum EyeRig {
             spriteAlpha[i] = alpha
         }
 
-        guard let rb = bounds(of: region, width: win.w, height: win.h) else { return .failure(.cannotSeparate) }
-        return .success(EyeParts(
+        guard let rb = bounds(of: region, width: win.w, height: win.h) else { return Layer(parts: .failure(.cannotSeparate)) }
+        return Layer(parts: .success(EyeParts(
             window: win, hole: hole, region: region, fill: fill, sprite: sprite, spriteAlpha: spriteAlpha,
-            used: rb, pupilBounds: (pw, ph), travel: travel
-        ))
+            used: rb, partBounds: (pw, ph), travel: travel, slips: !insideIris
+        )), around: around)
     }
 
     // MARK: - Pixels
@@ -617,6 +799,59 @@ enum EyeRig {
         }
         guard maxX >= 0 else { return nil }
         return (minX, minY, maxX + 1, maxY + 1)
+    }
+
+    /// The mask's convex hull, filled.
+    private static func convexOutline(of mask: [Bool], width w: Int, height h: Int) -> [Bool] {
+        // Leftmost and rightmost pixel of each row are the only ones that can be corners.
+        var points: [(x: Int, y: Int)] = []
+        for y in 0..<h {
+            var first = -1, last = -1
+            for x in 0..<w where mask[y * w + x] {
+                if first < 0 { first = x }
+                last = x
+            }
+            if first >= 0 {
+                points.append((first, y))
+                if last != first { points.append((last, y)) }
+            }
+        }
+        guard points.count >= 3 else { return mask }
+        points.sort { $0.x != $1.x ? $0.x < $1.x : $0.y < $1.y }
+        func cross(_ o: (x: Int, y: Int), _ a: (x: Int, y: Int), _ b: (x: Int, y: Int)) -> Int {
+            (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+        }
+        var hull: [(x: Int, y: Int)] = []
+        for point in points {
+            while hull.count >= 2, cross(hull[hull.count - 2], hull[hull.count - 1], point) <= 0 { hull.removeLast() }
+            hull.append(point)
+        }
+        let lower = hull.count + 1
+        for point in points.reversed() {
+            while hull.count >= lower, cross(hull[hull.count - 2], hull[hull.count - 1], point) <= 0 { hull.removeLast() }
+            hull.append(point)
+        }
+        hull.removeLast()
+        guard hull.count >= 3 else { return mask }
+
+        // Fill row by row between the hull's edges.
+        var filled = mask
+        for y in 0..<h {
+            var lo = Double.infinity, hi = -Double.infinity
+            for k in 0..<hull.count {
+                let a = hull[k], b = hull[(k + 1) % hull.count]
+                guard min(a.y, b.y) <= y, y <= max(a.y, b.y) else { continue }
+                if a.y == b.y {
+                    lo = min(lo, Double(min(a.x, b.x))); hi = max(hi, Double(max(a.x, b.x)))
+                } else {
+                    let x = Double(a.x) + Double(y - a.y) * Double(b.x - a.x) / Double(b.y - a.y)
+                    lo = min(lo, x); hi = max(hi, x)
+                }
+            }
+            guard lo <= hi else { continue }
+            for x in max(0, Int(lo.rounded(.up)))...min(w - 1, Int(hi.rounded(.down))) where x >= 0 { filled[y * w + x] = true }
+        }
+        return filled
     }
 
     /// How far each pixel is from the mask, in pixels (0 inside it). Two sweeps, counting a
