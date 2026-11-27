@@ -15,6 +15,12 @@ struct GazeTracker {
     static let homeTimeConstant: TimeInterval = 0.8
     /// The head sits this far down from the top of an upper-body box.
     static let headFromTop: CGFloat = 0.15
+    /// Added to the vertical gaze, so the eyes look a little lower than the geometry says.
+    /// The camera sits above the screen and a seated person's head is in the upper part of
+    /// its frame, which reads as "up"; but eyes on a screen that look straight out already
+    /// seem to look at whoever is in front of them, so that "up" lands above the person.
+    /// Found on a laptop: the eyes sat consistently a little too high.
+    static let downwardBias: CGFloat = 0.3
 
     /// A person has to be seen this many frames in a row before the eyes follow them, so a
     /// one-frame false detection can't flick the gaze toward an empty corner.
@@ -106,7 +112,7 @@ struct GazeTracker {
         let headY = person.maxY - person.height * headFromTop // Vision: y up
         return CGPoint(
             x: (1 - 2 * headX).clamped(to: -1...1),
-            y: (1 - 2 * headY).clamped(to: -1...1)
+            y: (1 - 2 * headY + downwardBias).clamped(to: -1...1)
         )
     }
 
