@@ -18,6 +18,24 @@ enum ImageDownsampling {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
+    /// Re-encodes `data` as a PNG no larger than `maxPixelSize` on its longest edge.
+    /// Smaller images pass through at their own size (never upscaled); EXIF orientation
+    /// is baked in so a phone photo lands the right way up. Returns nil for anything
+    /// ImageIO cannot decode.
+    static func downsampledPNG(from data: Data, maxPixelSize: Int) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = thumbnail(from: source, maxPixelSize: maxPixelSize)
+        else { return nil }
+
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, "public.png" as CFString, 1, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
+    }
+
     /// The image at `url` downsampled to cover `targetPixels` (scaled to fill, as the
     /// lock screen draws it). Blocking — call it off the main thread.
     static func image(at url: URL, filling targetPixels: CGSize) -> CGImage? {

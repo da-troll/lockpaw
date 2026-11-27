@@ -62,6 +62,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Mac. Launch rewrites it from the real state, which clears one a crash left behind.
         MainActor.assumeIsolated { ClaudePresenceMarker.shared.start() }
 
+        // A mascot folder: show one of its prepared images, then look for changes.
+        MainActor.assumeIsolated { MascotFolderController.shared.start() }
+
         // Start Sparkle after app is fully launched
         updateCheckViewModel.bind(to: updaterController.updater)
         MainActor.assumeIsolated {

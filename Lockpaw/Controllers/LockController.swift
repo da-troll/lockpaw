@@ -242,6 +242,8 @@ class LockController: ObservableObject {
 
         NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
         sleepPreventer.preventSleep()
+        // With a mascot folder, this lock's image: chosen before the cover is built.
+        MascotFolderController.shared.lockStarted()
 
         let mirrorAll = UserDefaults.standard.integer(forKey: "multiDisplayMode") == 1
         let fadeTimeout = FadeToBlack.currentTimeout
@@ -552,6 +554,7 @@ class LockController: ObservableObject {
         inputBlocker.stopBlocking()
         sleepPreventer.allowSleep()
         LidSleepController.shared.lockEnded()
+        MascotFolderController.shared.lockEnded()
     }
 
     private func forceUnlock() {
@@ -573,6 +576,7 @@ class LockController: ObservableObject {
         inputBlocker.stopBlocking()
         sleepPreventer.allowSleep()
         LidSleepController.shared.lockEnded()
+        MascotFolderController.shared.lockEnded()
     }
 
     // MARK: - Passive Touch ID
