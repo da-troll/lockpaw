@@ -13,6 +13,7 @@ class LockController: ObservableObject {
         didSet {
             LockStatus.shared.update(state)
             ClaudePresenceMarker.shared.lockStateChanged(state)
+            GazeController.shared.lockStateChanged(state)
         }
     }
     @Published var lockStartTime: Date?

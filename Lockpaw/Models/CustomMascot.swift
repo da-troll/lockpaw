@@ -22,6 +22,10 @@ final class CustomMascot: ObservableObject {
     static let maxPixelSize = 1024
 
     private static let fileName = "CustomMascot.png"
+    /// Where the eyes are (or why there are none), found once at install. See `MascotEyes`.
+    private static let eyesFileName = "CustomMascotEyes.json"
+
+    typealias EyeFinding = (CGImage) -> Result<MascotEyes, EyeRejection>
 
     let directory: URL
 
@@ -31,17 +35,32 @@ final class CustomMascot: ObservableObject {
     /// re-evaluates its body on every breath frame.
     @Published private(set) var hasImage: Bool
 
-    private var cached: NSImage?
+    /// The custom image's eyes, when it has one clear, straight-on pair. Nil otherwise,
+    /// with `eyeRejection` saying why (nil there too means not looked at yet).
+    @Published private(set) var eyes: MascotEyes? = nil
+    @Published private(set) var eyeRejection: EyeRejection? = nil
 
-    init(directory: URL) {
+    private var cached: NSImage?
+    private let findEyes: EyeFinding
+    private let eyesRevision: Int
+
+    init(directory: URL, findEyes: @escaping EyeFinding = EyeFinder.find, eyesRevision: Int = EyeFinder.revision) {
         self.directory = directory
+        self.findEyes = findEyes
+        self.eyesRevision = eyesRevision
         self.hasImage = FileManager.default.fileExists(
             atPath: directory.appendingPathComponent(Self.fileName).path
         )
+        if hasImage, let record = loadEyesRecord(), record.revision == eyesRevision {
+            eyes = record.eyes
+            eyeRejection = record.rejection
+        }
     }
 
     /// Always a real PNG: `install` re-encodes whatever the user picked.
     var imageURL: URL { directory.appendingPathComponent(Self.fileName) }
+
+    var eyesURL: URL { directory.appendingPathComponent(Self.eyesFileName) }
 
     /// Whether `mascot` will draw anything. Call sites gate their surrounding glows
     /// and shadows on this so an absent mascot leaves no orphaned lighting.
@@ -70,12 +89,47 @@ final class CustomMascot: ObservableObject {
         cached = nil
         hasImage = true
         revision += 1
+        detectEyes(in: png)
+    }
+
+    /// For an image installed before eyes existed, or found with an older detector.
+    /// Cheap when there's nothing to do; blocking (tens of ms) when there is.
+    func refreshEyesIfNeeded() {
+        guard hasImage, eyes == nil, eyeRejection == nil,
+              let png = try? Data(contentsOf: imageURL) else { return }
+        detectEyes(in: png)
+    }
+
+    /// A failure to find eyes never fails the install: the image still works as a mascot,
+    /// it just can't look around.
+    private func detectEyes(in png: Data) {
+        let result: Result<MascotEyes, EyeRejection>
+        if let source = CGImageSourceCreateWithData(png as CFData, nil),
+           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+            result = findEyes(image)
+        } else {
+            result = .failure(.noFace)
+        }
+        let record = MascotEyesRecord(revision: eyesRevision, result: result)
+        eyes = record.eyes
+        eyeRejection = record.rejection
+        if let data = try? JSONEncoder().encode(record) {
+            try? data.write(to: eyesURL, options: .atomic)
+        }
+    }
+
+    private func loadEyesRecord() -> MascotEyesRecord? {
+        guard let data = try? Data(contentsOf: eyesURL) else { return nil }
+        return try? JSONDecoder().decode(MascotEyesRecord.self, from: data)
     }
 
     func remove() {
         try? FileManager.default.removeItem(at: imageURL)
+        try? FileManager.default.removeItem(at: eyesURL)
         cached = nil
         hasImage = false
+        eyes = nil
+        eyeRejection = nil
         revision += 1
     }
 

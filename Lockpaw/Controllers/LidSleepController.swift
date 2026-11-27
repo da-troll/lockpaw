@@ -208,7 +208,8 @@ final class LidSleepController: ObservableObject {
 
     // MARK: - Power
 
-    private static func currentPower() -> LidSleepPolicy.Power {
+    /// Also read by `GazeController` for its own battery cutout.
+    static func currentPower() -> LidSleepPolicy.Power {
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else {
             return LidSleepPolicy.Power(onBattery: false, batteryPercent: nil)

@@ -15,7 +15,10 @@ struct LockScreenSettingsPane: View {
     @AppStorage(FadeToBlack.enabledKey) private var fadeToBlackEnabled = FadeToBlack.defaultEnabled
     @AppStorage(FadeToBlack.storageKey) private var fadeToBlackDelay = FadeToBlack.defaultValue
 
+    @AppStorage(GazeController.enabledKey) private var gazeEnabled = GazeController.defaultEnabled
+
     @ObservedObject private var customMascot = CustomMascot.shared
+    @ObservedObject private var gaze = GazeController.shared
     @ObservedObject private var supporter = Supporter.shared
     @State private var customMascotError: String?
 
@@ -46,6 +49,17 @@ struct LockScreenSettingsPane: View {
                         }
                     } label: {
                         SettingLabel("Image", detail: customMascotError ?? "PNG, JPEG or HEIC. A transparent background looks best.")
+                    }
+
+                    if customMascot.hasImage {
+                        Toggle(isOn: gazeBinding) {
+                            SettingLabel("Eyes follow passers-by", detail: gazeDetail)
+                        }
+                        .disabled(customMascot.eyes == nil)
+                        .onAppear {
+                            customMascot.refreshEyesIfNeeded()
+                            gaze.refreshAccess()
+                        }
                     }
                 }
 
@@ -116,6 +130,27 @@ struct LockScreenSettingsPane: View {
     @ViewBuilder
     private var mascotOptions: some View {
         ForEach(mascotChoices) { Text($0.displayName).tag($0.rawValue) }
+    }
+
+    /// On only with eyes to move and the camera granted. Turning it on is where the camera
+    /// permission is asked, here in Settings, never on the lock screen.
+    private var gazeBinding: Binding<Bool> {
+        Binding(
+            get: { gazeEnabled && customMascot.eyes != nil && gaze.access == .authorized },
+            set: { isOn in
+                guard isOn else { gazeEnabled = false; return }
+                Task { gazeEnabled = await gaze.requestAccess() }
+            }
+        )
+    }
+
+    private var gazeDetail: String {
+        if let rejection = customMascot.eyeRejection { return rejection.message }
+        if customMascot.eyes == nil { return "Looking for eyes\u{2026}" }
+        if gaze.access == .denied {
+            return "Camera access is off. Turn it on in System Settings \u{2192} Privacy & Security \u{2192} Camera."
+        }
+        return "Uses the camera while locked, so its light stays on. Frames stay on this Mac and are never saved."
     }
 
     private func chooseCustomImage() {

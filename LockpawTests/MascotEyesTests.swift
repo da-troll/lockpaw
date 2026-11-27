@@ -144,3 +144,13 @@ final class MascotEyesTests: XCTestCase {
         XCTAssertEqual(full.height, -50 * MascotEyes.travelFraction.height, accuracy: 0.0001)
     }
 }
+
+final class MascotEyesRecordTests: XCTestCase {
+    func testRecordsARejectionAndRoundTrips() throws {
+        let record = MascotEyesRecord(revision: 3, result: .failure(.multipleFaces))
+        XCTAssertNil(record.eyes)
+        let decoded = try JSONDecoder().decode(MascotEyesRecord.self, from: JSONEncoder().encode(record))
+        XCTAssertEqual(decoded, record)
+        XCTAssertEqual(decoded.rejection, .multipleFaces)
+    }
+}

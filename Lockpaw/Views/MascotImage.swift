@@ -13,9 +13,13 @@ import SwiftUI
 @MainActor
 struct MascotImage: View {
     let mascot: Mascot
+    /// Let a custom image's eyes follow passers-by (see `MascotGazeOverlay`). Only the
+    /// lock screen's resting mascot asks for this; previews never touch the camera.
+    let gazes: Bool
 
-    init(_ mascot: Mascot) {
+    init(_ mascot: Mascot, gazes: Bool = false) {
         self.mascot = mascot
+        self.gazes = gazes
     }
 
     var body: some View {
@@ -26,7 +30,13 @@ struct MascotImage: View {
                 .scaledToFit()
 
             if mascot == .custom {
-                base.mask { featheredEdge }
+                ZStack {
+                    base
+                    if gazes, let eyes = CustomMascot.shared.eyes, let custom = CustomMascot.shared.loadImage() {
+                        MascotGazeOverlay(image: custom, eyes: eyes)
+                    }
+                }
+                .mask { featheredEdge }
             } else {
                 base
             }
