@@ -125,6 +125,18 @@ final class MascotFolderTests: XCTestCase {
         XCTAssertEqual(MascotFolder.statusText(.missing(shown: 0)), "Folder not found.")
     }
 
+    func testOnlyImagesWithMovingEyesWhenAsked() {
+        let still = MascotFolder.Entry(id: "a", name: "a.png", readable: true, hasEyes: false)
+        let moving = MascotFolder.Entry(id: "b", name: "b.png", readable: true, hasEyes: true)
+        XCTAssertEqual(MascotFolder.choosable([still, moving], onlyWithEyes: true), [moving])
+        XCTAssertEqual(MascotFolder.choosable([still, moving], onlyWithEyes: false), [still, moving])
+    }
+
+    func testAFolderWithoutMovingEyesStillShowsItsImages() {
+        let still = MascotFolder.Entry(id: "a", name: "a.png", readable: true, hasEyes: false)
+        XCTAssertEqual(MascotFolder.choosable([still], onlyWithEyes: true), [still])
+    }
+
     func testNoEmDashesInTheCopy() {
         let states: [MascotFolder.State] = [.notChosen, .preparing(done: 0, total: 3), .ready(shown: 2, withEyes: 1, found: 2), .missing(shown: 1)]
         for state in states { XCTAssertFalse(MascotFolder.statusText(state).contains("\u{2014}")) }
