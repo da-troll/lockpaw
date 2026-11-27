@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- A custom mascot's eyes can follow whoever walks past the locked Mac. Turn on Settings → Lock Screen → "Eyes follow passers-by". It's off by default. It uses the camera only while locked, so the camera light is on then. Frames stay in memory on this Mac and are never saved or sent. It works for photos with a clear face and for drawn mascots with round eyes. When an image can't be used, Settings says why.
+- The custom mascot can come from a folder: up to 20 images, one picked at random each time you lock. Preparing them is a one-time job. With the eyes on, "Only images with moving eyes" skips the images where no eyes were found.
+- Small, Medium and Large sizes for the mascot and for the lock screen text. Small is today's size.
+
 ## [1.7.3] - 2026-11-10
 
 ### Added
