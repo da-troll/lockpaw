@@ -71,16 +71,18 @@ enum EyeRejection: String, Error, Equatable, Codable {
     case eyesTooSmall
     case turnedOrTilted
     case implausible
+    case ambiguous
 
     var message: String {
         switch self {
-        case .noFace: return "No face found, so there are no eyes to move."
+        case .noFace: return "Couldn't find a face or a clear pair of eyes."
         case .multipleFaces: return "More than one face. Pick an image with just one."
         case .unsure: return "The face isn't clear enough to place the eyes."
         case .eyesNotFound: return "Couldn't find both eyes."
         case .eyesTooSmall: return "The eyes are too small to move. Crop closer to the face."
         case .turnedOrTilted: return "The face is turned or tilted. A straight-on face works best."
         case .implausible: return "The eyes found don't look right for this face."
+        case .ambiguous: return "Found more than one pair of eye-like spots, so it can't tell which are the eyes."
         }
     }
 }
