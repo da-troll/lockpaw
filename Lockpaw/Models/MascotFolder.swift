@@ -104,6 +104,15 @@ enum MascotFolder {
         case missing(shown: Int)
     }
 
+    /// The images a lock may pick from. With `onlyWithEyes`, only those whose eyes move, so
+    /// nobody waits for a look that never comes; but never none at all because of it: a
+    /// folder where no image has moving eyes still shows its images.
+    static func choosable(_ entries: [Entry], onlyWithEyes: Bool) -> [Entry] {
+        guard onlyWithEyes else { return entries }
+        let withEyes = entries.filter(\.hasEyes)
+        return withEyes.isEmpty ? entries : withEyes
+    }
+
     static func statusText(_ state: State) -> String {
         switch state {
         case .notChosen:

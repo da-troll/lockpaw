@@ -18,6 +18,7 @@ struct LockScreenSettingsPane: View {
     @AppStorage(FadeToBlack.storageKey) private var fadeToBlackDelay = FadeToBlack.defaultValue
 
     @AppStorage(GazeController.enabledKey) private var gazeEnabled = GazeController.defaultEnabled
+    @AppStorage(MascotFolderController.onlyWithEyesKey) private var folderOnlyWithEyes = MascotFolderController.defaultOnlyWithEyes
     @AppStorage(MascotFolderController.sourceKey) private var customSource = MascotFolderController.imageSource
 
     @ObservedObject private var customMascot = CustomMascot.shared
@@ -99,6 +100,14 @@ struct LockScreenSettingsPane: View {
                         .onAppear {
                             customMascot.refreshEyesInBackground()
                             gaze.refreshAccess()
+                        }
+                        .onChange(of: gazeEnabled) { _, _ in folder.choiceChanged() }
+
+                        if usesFolder && gazeBinding.wrappedValue {
+                            Toggle(isOn: $folderOnlyWithEyes) {
+                                SettingLabel("Only images with moving eyes", detail: "Skips the images where no eyes were found.")
+                            }
+                            .onChange(of: folderOnlyWithEyes) { _, _ in folder.choiceChanged() }
                         }
                     }
                 }

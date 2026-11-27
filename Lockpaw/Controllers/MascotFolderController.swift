@@ -159,6 +159,9 @@ final class MascotFolderController: ObservableObject {
     static let imageSource = "image"
     static let folderSource = "folder"
     static let pathKey = "customMascotFolder"
+    /// Skip images without moving eyes while the eyes follow passers-by. On by default.
+    static let onlyWithEyesKey = "customMascotFolderOnlyWithEyes"
+    static let defaultOnlyWithEyes = true
 
     struct Progress: Equatable {
         var done: Int
@@ -205,6 +208,18 @@ final class MascotFolderController: ObservableObject {
     /// Images that can be shown.
     var usable: [MascotFolder.Entry] { index?.usable ?? [] }
 
+    /// What a lock picks from: `usable`, less the still-eyed images when the eyes are on
+    /// and the user asked to skip them.
+    var choosable: [MascotFolder.Entry] {
+        let skip = (defaults.object(forKey: Self.onlyWithEyesKey) as? Bool ?? Self.defaultOnlyWithEyes)
+            && defaults.bool(forKey: GazeController.enabledKey)
+        return MascotFolder.choosable(usable, onlyWithEyes: skip)
+    }
+
+    /// The eyes switch or "only with moving eyes" changed: the image shown may no longer
+    /// be one a lock would pick.
+    func choiceChanged() { showSomething() }
+
     var state: MascotFolder.State {
         guard folderURL != nil else { return .notChosen }
         if let progress { return .preparing(done: progress.done, total: progress.total) }
@@ -238,7 +253,7 @@ final class MascotFolderController: ObservableObject {
     func lockStarted() {
         guard isFolderSource else { return }
         var generator = SystemRandomNumberGenerator()
-        guard let id = MascotFolder.pick(from: usable.map(\.id), last: lastPicked, using: &generator) else {
+        guard let id = MascotFolder.pick(from: choosable.map(\.id), last: lastPicked, using: &generator) else {
             show(nil)
             return
         }
@@ -318,7 +333,7 @@ final class MascotFolderController: ObservableObject {
     /// isn't the source or has nothing to show.
     private func showSomething() {
         guard isFolderSource else { return show(nil) }
-        let ids = usable.map(\.id)
+        let ids = choosable.map(\.id)
         if let shownID, ids.contains(shownID) { return }
         show(ids.first)
     }
