@@ -192,7 +192,7 @@ struct LockScreenSettingsPane: View {
     /// under it says; the camera itself still only runs for an image with eyes.
     private var gazeBinding: Binding<Bool> {
         Binding(
-            get: { gazeEnabled && gaze.access == .authorized },
+            get: { GazeCameraPolicy.settingShowsOn(enabled: gazeEnabled, access: gaze.access) },
             set: { isOn in
                 guard isOn else { gazeEnabled = false; return }
                 Task { gazeEnabled = await gaze.requestAccess() }
