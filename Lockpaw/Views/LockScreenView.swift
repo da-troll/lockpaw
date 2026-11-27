@@ -19,6 +19,8 @@ struct LockScreenView: View {
     @AppStorage("lockMessage") private var message = Constants.defaultLockMessage
     @AppStorage(Mascot.storageKey) private var selectedMascot = Mascot.defaultValue
     @AppStorage(GazeController.enabledKey) private var gazeEnabled = GazeController.defaultEnabled
+    @AppStorage(LockScreenSize.mascotStorageKey) private var mascotSizeRaw = LockScreenSize.defaultValue.rawValue
+    @AppStorage(LockScreenSize.textStorageKey) private var textSizeRaw = LockScreenSize.defaultValue.rawValue
     @AppStorage(HotkeyConfig.requireAuthenticationToUnlockKey) private var requiresAuthenticationToUnlock = HotkeyConfig.defaultRequireAuthenticationToUnlock
 
     @State private var phase: CGFloat = 0
@@ -50,16 +52,19 @@ struct LockScreenView: View {
     var body: some View {
         GeometryReader { geo in
             let compact = geo.size.height < 700
-            let mascotSize = min(geo.size.width * 0.2, geo.size.height * 0.3)
-            let unit = mascotSize * 0.12
+            let mascotLayout = LockScreenSize.resolved(from: mascotSizeRaw).mascotLayout(in: geo.size)
+            let mascotSize = mascotLayout.side
+            let unit = mascotLayout.unit
+            let textScale = LockScreenSize.resolved(from: textSizeRaw).textScale
 
             ZStack {
                 background(geo: geo)
 
-                // Content group — positioned at ~42% from top (slightly below center)
+                // Content group — positioned at ~42% from top (slightly below center).
+                // A resized mascot keeps its centre: see `LockScreenSize.mascotLayout`.
                 VStack(spacing: 0) {
                     Spacer().frame(minHeight: 0)
-                        .frame(height: geo.size.height * 0.32)
+                        .frame(height: mascotLayout.topInset)
 
                     // Mascot + message + time as a tight cohesive group
                     VStack(spacing: unit * 1.2) {
@@ -105,26 +110,26 @@ struct LockScreenView: View {
                                 EmptyView()
                             } else if controller.isAuthenticating {
                                 Text("Authenticating\u{2026}")
-                                    .font(.lockBody(compact: compact))
+                                    .font(.lockBody(compact: compact, scale: textScale))
                                     .foregroundStyle(.white.opacity(0.55))
                             } else if let error = controller.lastError {
                                 // Same body role as the message — color carries the
                                 // error, weight just steadies it.
                                 Text(error)
-                                    .font(.lockBody(compact: compact))
+                                    .font(.lockBody(compact: compact, scale: textScale))
                                     .fontWeight(.medium)
                                     .foregroundStyle(Color("LockpawError"))
                                     .shadow(color: Color("LockpawError").opacity(0.15), radius: 8)
                             } else if showMessage {
                                 Text(message)
-                                    .font(.lockBody(compact: compact))
+                                    .font(.lockBody(compact: compact, scale: textScale))
                                     .foregroundStyle(.white.opacity(0.55))
                             }
                         }
                         .multilineTextAlignment(.center)
                         .lineLimit(3)
                         .minimumScaleFactor(0.8)
-                        .tracking(0.35)
+                        .tracking(0.35 * textScale)
                         .padding(.horizontal, max(64, geo.size.width * 0.2))
                         .opacity(appeared ? 1 : 0)
                         .animation(Constants.Anim.gentle, value: controller.isAuthenticating)
@@ -136,9 +141,9 @@ struct LockScreenView: View {
                         // Time
                         TimelineView(.periodic(from: .now, by: 1)) { _ in
                             Text(Constants.formatElapsedTime(controller.elapsedTime))
-                                .font(.lockMono)
+                                .font(.lockMono(scale: textScale))
                                 .foregroundStyle(.white.opacity(0.35))
-                                .tracking(0.5)
+                                .tracking(0.5 * textScale)
                                 .accessibilityLabel("Locked for \(Constants.formatElapsedTimeAccessible(controller.elapsedTime))")
                         }
                         .opacity(appeared ? 1 : 0)
@@ -151,7 +156,7 @@ struct LockScreenView: View {
                         // explicit opacity: removal transitions hard-cut in the overlay on
                         // macOS 26. The animations are scoped to the list so a ping never
                         // opens an animated transaction over the breathing mascot.
-                        AgentPingList(queue: controller.agentPings, breathe: breathe)
+                        AgentPingList(queue: controller.agentPings, breathe: breathe, textScale: textScale)
                             .opacity(controller.agentPings.isEmpty || controller.unlockSucceeded ? 0 : 1)
                             .opacity(appeared ? 1 : 0)
                             .opacity(controller.isAuthenticating ? 0.15 : 1)

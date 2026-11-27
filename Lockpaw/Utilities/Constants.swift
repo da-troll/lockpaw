@@ -132,4 +132,10 @@ extension Font {
     static let lockLabel: Font = .system(size: 13, weight: .medium)
     static let lockCaption: Font = .system(size: 12, weight: .light)
     static let lockMono: Font = .system(size: 12, weight: .regular, design: .monospaced)
+
+    /// The same roles at the user's text size (`LockScreenSize.textScale`), for the message,
+    /// the timer and the waiting-agent rows. The scale is the only thing that changes.
+    static func lockBody(compact: Bool, scale: CGFloat) -> Font { .system(size: (compact ? 14 : 16) * scale, weight: .regular) }
+    static func lockCaption(scale: CGFloat) -> Font { .system(size: 12 * scale, weight: .light) }
+    static func lockMono(scale: CGFloat) -> Font { .system(size: 12 * scale, weight: .regular, design: .monospaced) }
 }

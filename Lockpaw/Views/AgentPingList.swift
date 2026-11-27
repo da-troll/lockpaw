@@ -10,23 +10,25 @@ import SwiftUI
 struct AgentPingList: View {
     let queue: AgentPingQueue
     let breathe: CGFloat
+    /// The user's text size (`LockScreenSize.textScale`); spacing and the dot follow it.
+    var textScale: CGFloat = 1
 
     @AppStorage(Constants.lockScreenShowsProjectsKey) private var showsProjects = false
 
     static let maxRows = 3
 
     var body: some View {
-        VStack(spacing: 8) {
-            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
+        VStack(spacing: 8 * textScale) {
+            Grid(alignment: .leading, horizontalSpacing: 10 * textScale, verticalSpacing: 6 * textScale) {
                 ForEach(queue.rows.prefix(Self.maxRows)) { ping in
                     row(ping)
                 }
             }
             if queue.pings.count > Self.maxRows {
                 Text("and \(queue.pings.count - Self.maxRows) more")
-                    .font(.lockCaption)
+                    .font(.lockCaption(scale: textScale))
                     .foregroundStyle(.white.opacity(0.25))
-                    .tracking(0.5)
+                    .tracking(0.5 * textScale)
             }
         }
         .allowsHitTesting(false)
@@ -37,16 +39,16 @@ struct AgentPingList: View {
         GridRow {
             marker(ping.kind.status)
             Text(ping.name(includingProject: showsProjects))
-                .font(.lockCaption)
+                .font(.lockCaption(scale: textScale))
                 .foregroundStyle(.white.opacity(0.4))
             TimelineView(WaitTimeSchedule(start: ping.receivedAt)) { context in
                 Text(Constants.formatWaitTime(context.date.timeIntervalSince(ping.receivedAt)))
-                    .font(.lockMono)
+                    .font(.lockMono(scale: textScale))
                     .foregroundStyle(.white.opacity(0.3))
             }
             .gridColumnAlignment(.trailing)
         }
-        .tracking(0.5)
+        .tracking(0.5 * textScale)
         .lineLimit(1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(ping.summary(includingProject: showsProjects))
@@ -55,7 +57,7 @@ struct AgentPingList: View {
     private func marker(_ status: AgentPingStatus) -> some View {
         Circle()
             .fill(status.dotColor)
-            .frame(width: 5, height: 5)
+            .frame(width: 5 * textScale, height: 5 * textScale)
             .opacity(0.55 + breathe * 0.3)
     }
 }
